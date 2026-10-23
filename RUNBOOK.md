@@ -35,6 +35,18 @@ npm run build:prod
 npm run test:ci
 ```
 
+## Authenticated identity check
+
+An authorized reviewer can verify the deployed identity contract without placing a password or token in source, shell history, logs, or issue comments:
+
+```bash
+python3 scripts/verify-user-info.py http://10.0.10.236:1026
+```
+
+The script prompts on the controlling terminal with echo disabled, keeps the password and returned token in process memory only, and prints only PASS/FAIL. The minimum access needed is one valid administrator password for the target environment, supplied directly to the reviewer through an approved out-of-band channel; do not send it in this repository or a Multica comment.
+
+The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `avatar="/harbor-mark.svg"`. `make smoke` checks the same avatar contract against its disposable local fixture.
+
 ## Common problems
 
 - If the Vue app cannot call `/api`, start the Go API first and check `TENSUNS_API` / `vue.config.js` proxy settings.

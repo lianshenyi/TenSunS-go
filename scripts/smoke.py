@@ -30,7 +30,11 @@ def main():
     assert token.startswith("Bearer "), token
 
     _, info = request(base, "GET", "/api/user/info", token)
-    assert info["code"] == 20000 and info["data"]["name"] == "admin", info
+    assert (
+        info["code"] == 20000
+        and info["data"]["name"] == "admin"
+        and info["data"]["avatar"] == "/harbor-mark.svg"
+    ), info
 
     query = urllib.parse.quote(json.dumps({"vendor": "", "account": "", "itype": ""}, ensure_ascii=False))
     _, jobs = request(base, "GET", "/api/jobs?query_dict=" + query, token)
