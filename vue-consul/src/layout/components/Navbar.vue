@@ -58,14 +58,15 @@ export default {
 
 <style lang="scss" scoped>
 .navbar {
-  height: 50px;
+  height: 64px;
   overflow: hidden;
   position: relative;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0,21,41,.08);
+  background: #f9fcfb;
+  border-bottom: 1px solid #c9d9d4;
+  box-shadow: none;
 
   .hamburger-container {
-    line-height: 46px;
+    line-height: 60px;
     height: 100%;
     float: left;
     cursor: pointer;
@@ -73,7 +74,7 @@ export default {
     -webkit-tap-highlight-color:transparent;
 
     &:hover {
-      background: rgba(0, 0, 0, .025)
+      background: #e5f0ec
     }
   }
 
@@ -84,7 +85,7 @@ export default {
   .right-menu {
     float: right;
     height: 100%;
-    line-height: 50px;
+    line-height: 64px;
 
     &:focus {
       outline: none;
@@ -103,30 +104,31 @@ export default {
         transition: background .3s;
 
         &:hover {
-          background: rgba(0, 0, 0, .025)
+          background: #e5f0ec
         }
       }
     }
 
     .avatar-container {
-      margin-right: 30px;
+      margin-right: 34px;
 
       .avatar-wrapper {
-        margin-top: 5px;
+        margin-top: 12px;
         position: relative;
 
         .user-avatar {
           cursor: pointer;
-          width: 40px;
-          height: 40px;
-          border-radius: 10px;
+          width: 38px;
+          height: 38px;
+          border-radius: 50%;
+          border: 2px solid #e0a458;
         }
 
         .el-icon-caret-bottom {
           cursor: pointer;
           position: absolute;
           right: -20px;
-          top: 25px;
+          top: 20px;
           font-size: 12px;
         }
       }
