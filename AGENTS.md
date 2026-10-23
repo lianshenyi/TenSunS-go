@@ -121,6 +121,7 @@ python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
 - Consul 中确认生成 `ConsulManager/assets/secret/skey`，并有 14 个 `ConsulManager/` KV、4 个演示服务。
 - 冒烟阶段临时启用调度器后，5 个任务成功加载并计算 `nextime`；当前 Cloud/JMS 适配器尚未接入，任务执行会报未接线错误。
 - 前端 `http://10.0.10.236:1026` 返回 200；静态 JS 与 gzip 资源正常；经 Nginx 代理的登录接口返回 `20000`，`/api/jobs` 返回 4 个云任务。
+- Nginx 使用 Docker DNS 动态解析后端；重建 `tensuns-go-api` 后无需重启前端，代理仍可正常登录。
 
 当前保留状态：
 
