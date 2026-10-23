@@ -195,6 +195,7 @@ $light_gray:#f7fcfa;
     width: 430px;
     max-width: 100%;
     padding: 40px;
+    box-sizing: border-box;
     background: rgba(247, 252, 250, .97);
     border: 1px solid rgba(255, 247, 231, .45);
     border-top: 6px solid #e0a458;
