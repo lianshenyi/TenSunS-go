@@ -194,6 +194,8 @@ $light_gray:#f7fcfa;
   .login-panel {
     width: 430px;
     max-width: 100%;
+    min-width: 0;
+    justify-self: stretch;
     padding: 40px;
     box-sizing: border-box;
     background: rgba(247, 252, 250, .97);
@@ -241,6 +243,19 @@ $light_gray:#f7fcfa;
     color: $dark_gray;
     cursor: pointer;
     user-select: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .login-container {
+    padding: 16px;
+
+    .login-panel {
+      padding: 28px 24px;
+      box-shadow: 10px 10px 0 rgba(7, 27, 34, .22);
+    }
+
+    .brand-lockup { margin-bottom: 24px; }
   }
 }
 </style>
