@@ -1,0 +1,132 @@
+# AGENTS.md
+
+本文件记录 TenSunS-go 的二次开发约定、常用命令与部署验证结果，供后续开发者和自动化 Agent 使用。
+
+## 1. 项目定位
+
+- 本仓库是 [TenSunS](https://github.com/starsliao/TenSunS) 的二次开发版本，不是上游仓库。
+- 目标范围：多云资源（分组、ECS、云 MySQL、云 Redis）同步到 Consul，并把 ECS 同步到 JumpServer。
+- 当前后端正在从 Flask 迁移到 Go；`flask-consul/` 仅作为行为对照保留。
+- 迁移契约以 [docs/迁移基线.md](docs/迁移基线.md) 为准，当前完成度见 [docs/Go迁移进度.md](docs/Go迁移进度.md)。
+
+## 2. 当前实现边界
+
+已实现：
+
+- Go 配置加载、Consul 连通性检查与 skey 初始化。
+- 与 Python 兼容的 AES-256-CBC 和 itsdangerous HS512 Token。
+- Consul KV / 服务注册 / 健康检查封装。
+- 动态 interval 调度器、任务加载、任务解析。
+- 登录、用户信息、任务列表、云账户、云资源列表、JumpServer 列表/配置等读接口。
+- `cmd/consulmock` 内存 Consul 与 `scripts/smoke.sh` 兼容性冒烟测试。
+
+尚未实现：
+
+- 阿里云、腾讯云、华为云、AWS 的 Go 同步适配器。
+- 同步结果写回 Consul。
+- JumpServer Go 客户端。
+- 新建/运行任务、云账户提交、自定义实例保存、JumpServer 首次同步等写接口。
+
+未实现部分会返回业务码 `50000` 或暂不提供；在适配器接入前，不要用 Go 进程接管生产同步任务。
+
+## 3. 仓库结构
+
+```text
+cmd/tensuns/        Go 后端入口
+cmd/consulmock/     内存 Consul 测试服务
+internal/           配置、鉴权、加密、Consul、调度、HTTP API
+scripts/            冒烟测试
+vue-consul/         Vue 2 前端
+flask-consul/       Python 迁移参考实现
+docs/               迁移基线与使用文档
+install/            旧 Flask 部署脚本，仅历史参考，不适用于 Go
+```
+
+## 4. 本地开发命令
+
+```bash
+make test       # go test ./...
+make smoke      # 内存 Consul + Go 后端 + 附录 B 冒烟测试
+make build      # 构建 bin/tensuns 和 bin/consulmock
+make image      # 构建 tensuns-go:latest
+```
+
+Go 代码要求：
+
+- 使用标准库优先，保持无第三方 Go 依赖（当前 `go.mod` 无 `require`）。
+- 修改 API 响应、字段名、状态码、时间格式前，先查 `docs/迁移基线.md` 并同步更新冒烟测试。
+- AES 格式为 `Base64(IV + AES-256-CBC(PKCS#7(plaintext)))`；Token 为 HS512 JWS，有效期 8 小时。
+- Consul 任务 KV 的 `func`、`args`、`id` 必须兼容 Python 版本，禁止随意改名。
+
+## 5. 部署验证记录
+
+验证日期：2026-10-23。
+
+验证主机：
+
+- 地址：`10.0.10.236`
+- 系统：Rocky Linux 9.4
+- Docker：28.0.4
+- 部署目录：`/opt/tensuns-go`
+- 仓库：`https://github.com/lianshenyi/TenSunS-go.git`
+- 验证提交：`a02a102`（初始提交）
+
+运行状态：
+
+| 组件 | 容器/路径 | 端口/说明 |
+| --- | --- | --- |
+| Consul 1.19.2 | `tensuns-go-consul` | 仅本机 `127.0.0.1:18500 -> 8500`，数据卷 `tensuns-go-consul-data` |
+| Go 后端 | `tensuns-go-api` | `0.0.0.0:2026 -> 2026`，镜像 `tensuns-go:verify` |
+| 验证环境变量 | `/opt/tensuns-go-verify/tensuns.env` | 权限 600 |
+| 登录密码 | `/opt/tensuns-go-verify/admin_passwd` | 权限 600，不写入仓库 |
+| 演示数据脚本 | `/opt/tensuns-go-verify/seed_demo.py` | 向真实 Consul 写入 14 个 KV、4 个服务 |
+
+部署和验证命令：
+
+```bash
+# 服务器上构建
+cd /opt/tensuns-go
+git pull --ff-only
+docker build -t tensuns-go:verify .
+
+# 启动/重建后端
+docker rm -f tensuns-go-api 2>/dev/null || true
+docker run -d --name tensuns-go-api --network tensuns-go-net \
+  -p 0.0.0.0:2026:2026 \
+  --env-file /opt/tensuns-go-verify/tensuns.env \
+  tensuns-go:verify
+
+# 本机执行兼容性冒烟测试。仅在调度器启用时校验 nextime。
+PW=$(ssh root@10.0.10.236 'cat /opt/tensuns-go-verify/admin_passwd')
+python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
+```
+
+本次验证结果：
+
+- Dockerfile 在目标机成功构建，Go 二进制以非 root 用户运行。
+- 后端成功连接真实 Consul，读取 skey、任务与演示资源。
+- 冒烟测试通过：`PASS: login, info, jobs, edit/cloud, nodes/res, jms/list, jms/config`。
+- Consul 中确认生成 `ConsulManager/assets/secret/skey`，并有 14 个 `ConsulManager/` KV、4 个演示服务。
+- 冒烟阶段临时启用调度器后，5 个任务成功加载并计算 `nextime`；当前 Cloud/JMS 适配器尚未接入，任务执行会报未接线错误。
+
+当前保留状态：
+
+- `tensuns-go-api` 最终以 `scheduler_disabled=1` 运行，避免未接线的任务反复报错。
+- 因此最终状态下 `/api/jobs` 的 `nextime` 为 `无`，这是预期行为，不是回归。
+- 重新做冒烟验证时，可临时去掉 env 文件中的 `scheduler_disabled=1` 后重启后端；验证完成后再恢复。
+- 演示数据中的 JumpServer 地址和 Token 仅用于测试，不是真实凭据。
+
+## 6. 安全与提交约定
+
+- 禁止提交 `ConsulManager/assets/secret/skey`、`bak-skey*`、真实云厂商 AK/SK、JumpServer Token、`.env` 或部署密码。
+- 部署密码保存在目标机 `/opt/tensuns-go-verify/`，不要复制到仓库或提交历史。
+- 不要在 Go 适配器完成前把调度器用于生产；当前 `jobs.Runtime` 的 Cloud/JMS 依赖为空。
+- `install/` 下的脚本仍指向旧 Flask 镜像，Go 阶段使用根目录 `Dockerfile` / `make image`。
+- 保留 `LICENSE` 与上游来源说明；可以继续清理上游品牌链接，但不要删除许可证。
+
+## 7. 后续优先级
+
+1. 实现四家云厂商的 Go 适配器，并补真实 Consul 写入。
+2. 实现 JumpServer V2/V3 客户端与同步流程。
+3. 补齐任务新建/立即运行、云账户提交、自定义实例写接口。
+4. 为写接口和同步流程补充集成测试，再考虑启用生产调度。

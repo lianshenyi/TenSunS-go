@@ -98,6 +98,7 @@ install/            旧 Flask 版本的部署脚本，仅作历史参考
 - [开发模式调试说明](docs/开发模式调试说明.md)
 - [Go 重构迁移基线](docs/迁移基线.md)
 - [Go 迁移进度与骨架说明](docs/Go迁移进度.md)
+- [开发与部署约定（AGENTS.md）](AGENTS.md)
 - [FAQ](docs/FAQ.md)
 
 ## 📄来源与许可
