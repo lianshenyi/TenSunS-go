@@ -38,13 +38,13 @@ module.exports = {
       errors: true
     },
 
-    // 非nginx调试，使用代理后端模式。
-    // proxy:{
-      // 'api':{
-        // target:'http://192.168.1.120:2026',
-        // changeOrigin: true,
-      // }
-    // },
+    // 本地开发时将 /api 代理到 Go 后端。
+    proxy: {
+      '/api': {
+        target: process.env.TENSUNS_API || 'http://127.0.0.1:2026',
+        changeOrigin: true
+      }
+    },
   },
   configureWebpack: {
     // provide the app's title in webpack's name field, so that

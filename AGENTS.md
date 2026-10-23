@@ -50,8 +50,10 @@ make smoke      # 内存 Consul + Go 后端 + 附录 B 冒烟测试
 make build      # 构建 bin/tensuns 和 bin/consulmock
 make image      # 构建后端镜像 tensuns-go:latest
 make web-image  # 构建前端镜像 tensuns-go-web:latest
-make web-dev    # 启动 Vue 本地开发服务
+make web-dev    # 启动 Vue 本地开发服务，/api 默认代理到 127.0.0.1:2026
 ```
+
+`make web-dev` 可通过 `TENSUNS_API` 覆盖后端地址，例如 `TENSUNS_API=http://10.0.10.236:2026 make web-dev`。
 
 Go 代码要求：
 
