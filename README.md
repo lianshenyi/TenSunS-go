@@ -53,13 +53,21 @@
 make go-test    # 单元测试
 make go-smoke   # 使用内存 Consul 的兼容性冒烟测试
 make go-build   # 构建 bin/tensuns 与 bin/consulmock
-make go-image   # 构建容器镜像 tensuns-go:latest
+make go-image   # 构建后端镜像 tensuns-go:latest
+make web-image  # 构建前端 Nginx 镜像 tensuns-go-web:latest
+make web-dev    # 启动 Vue 本地开发服务
 ```
 
-直接运行：
+后端直接运行：
 
 ```bash
 go run ./cmd/tensuns
+```
+
+前端镜像默认监听 `1026`，并将 `/api/` 代理到同一 Docker 网络中的 `tensuns-go-api:2026`。构建基础镜像无法直连 Docker Hub 时，可传入：
+
+```bash
+make web-image WEB_BUILD_ARGS="--build-arg NODE_IMAGE=... --build-arg NGINX_IMAGE=..."
 ```
 
 主要环境变量：

@@ -48,7 +48,9 @@ install/            旧 Flask 部署脚本，仅历史参考，不适用于 Go
 make test       # go test ./...
 make smoke      # 内存 Consul + Go 后端 + 附录 B 冒烟测试
 make build      # 构建 bin/tensuns 和 bin/consulmock
-make image      # 构建 tensuns-go:latest
+make image      # 构建后端镜像 tensuns-go:latest
+make web-image  # 构建前端镜像 tensuns-go-web:latest
+make web-dev    # 启动 Vue 本地开发服务
 ```
 
 Go 代码要求：
@@ -77,6 +79,7 @@ Go 代码要求：
 | --- | --- | --- |
 | Consul 1.19.2 | `tensuns-go-consul` | 仅本机 `127.0.0.1:18500 -> 8500`，数据卷 `tensuns-go-consul-data` |
 | Go 后端 | `tensuns-go-api` | `0.0.0.0:2026 -> 2026`，镜像 `tensuns-go:verify` |
+| Vue 前端 | `tensuns-go-web` | `0.0.0.0:1026 -> 1026`，镜像 `tensuns-go-web:verify`，`/api/` 代理到后端 |
 | 验证环境变量 | `/opt/tensuns-go-verify/tensuns.env` | 权限 600 |
 | 登录密码 | `/opt/tensuns-go-verify/admin_passwd` | 权限 600，不写入仓库 |
 | 演示数据脚本 | `/opt/tensuns-go-verify/seed_demo.py` | 向真实 Consul 写入 14 个 KV、4 个服务 |
@@ -96,6 +99,15 @@ docker run -d --name tensuns-go-api --network tensuns-go-net \
   --env-file /opt/tensuns-go-verify/tensuns.env \
   tensuns-go:verify
 
+# 构建/启动前端（本机 Docker Hub 镜像不可达，使用可访问的基础镜像）
+docker build \
+  --build-arg NODE_IMAGE=registry.cn-shenzhen.aliyuncs.com/starsl/node:14-alpine \
+  --build-arg NGINX_IMAGE=registry.cn-shenzhen.aliyuncs.com/starsl/nginx:1.24.0-alpine \
+  -t tensuns-go-web:verify vue-consul
+docker rm -f tensuns-go-web 2>/dev/null || true
+docker run -d --name tensuns-go-web --network tensuns-go-net \
+  -p 0.0.0.0:1026:1026 tensuns-go-web:verify
+
 # 本机执行兼容性冒烟测试。仅在调度器启用时校验 nextime。
 PW=$(ssh root@10.0.10.236 'cat /opt/tensuns-go-verify/admin_passwd')
 python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
@@ -108,10 +120,12 @@ python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
 - 冒烟测试通过：`PASS: login, info, jobs, edit/cloud, nodes/res, jms/list, jms/config`。
 - Consul 中确认生成 `ConsulManager/assets/secret/skey`，并有 14 个 `ConsulManager/` KV、4 个演示服务。
 - 冒烟阶段临时启用调度器后，5 个任务成功加载并计算 `nextime`；当前 Cloud/JMS 适配器尚未接入，任务执行会报未接线错误。
+- 前端 `http://10.0.10.236:1026` 返回 200；静态 JS 与 gzip 资源正常；经 Nginx 代理的登录接口返回 `20000`，`/api/jobs` 返回 4 个云任务。
 
 当前保留状态：
 
 - `tensuns-go-api` 最终以 `scheduler_disabled=1` 运行，避免未接线的任务反复报错。
+- `tensuns-go-web` 保持运行，访问地址为 `http://10.0.10.236:1026`；容器需先启动后端，因为 Nginx 在启动时解析 `tensuns-go-api`。
 - 因此最终状态下 `/api/jobs` 的 `nextime` 为 `无`，这是预期行为，不是回归。
 - 重新做冒烟验证时，可临时去掉 env 文件中的 `scheduler_disabled=1` 后重启后端；验证完成后再恢复。
 - 演示数据中的 JumpServer 地址和 Token 仅用于测试，不是真实凭据。
@@ -121,7 +135,7 @@ python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
 - 禁止提交 `ConsulManager/assets/secret/skey`、`bak-skey*`、真实云厂商 AK/SK、JumpServer Token、`.env` 或部署密码。
 - 部署密码保存在目标机 `/opt/tensuns-go-verify/`，不要复制到仓库或提交历史。
 - 不要在 Go 适配器完成前把调度器用于生产；当前 `jobs.Runtime` 的 Cloud/JMS 依赖为空。
-- `install/` 下的脚本仍指向旧 Flask 镜像，Go 阶段使用根目录 `Dockerfile` / `make image`。
+- `install/` 下的脚本仍指向旧 Flask 镜像，Go 阶段使用根目录 `Dockerfile` / `make image`，前端使用 `vue-consul/Dockerfile` / `make web-image`。
 - 保留 `LICENSE` 与上游来源说明；可以继续清理上游品牌链接，但不要删除许可证。
 
 ## 7. 后续优先级
