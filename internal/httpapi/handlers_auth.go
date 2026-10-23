@@ -62,7 +62,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 			"data": map[string]any{
 				"roles":  []string{"admin"},
 				"name":   "admin",
-				"avatar": "/sl.png",
+				"avatar": "/harbor-mark.svg",
 			},
 		})
 	default:

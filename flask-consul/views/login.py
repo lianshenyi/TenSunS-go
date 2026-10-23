@@ -23,7 +23,7 @@ class User(Resource):
         if user_opt == 'info':
             return {
                     "code": 20000,
-                    "data": {"roles": ["admin"],"name": "admin","avatar": "/sl.png"}}
+                    "data": {"roles": ["admin"],"name": "admin","avatar": "/harbor-mark.svg"}}
 
     def post(self, user_opt):
         args = parser.parse_args()
