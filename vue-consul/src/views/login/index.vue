@@ -187,15 +187,16 @@ $light_gray:#f7fcfa;
   width: 100%;
   min-height: 100vh;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   padding: 24px;
   background: radial-gradient(circle at 18% 20%, rgba(224, 164, 88, .2), transparent 29%), linear-gradient(135deg, #0c242d 0%, #123f47 57%, #176c68 100%);
 
   .login-panel {
-    width: 430px;
+    width: min(430px, 100%);
     max-width: 100%;
     min-width: 0;
-    justify-self: stretch;
+    justify-self: center;
     padding: 40px;
     box-sizing: border-box;
     background: rgba(247, 252, 250, .97);
