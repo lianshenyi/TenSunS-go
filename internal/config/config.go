@@ -1,0 +1,177 @@
+// Package config contains environment configuration and the cloud-vendor
+// lookup tables that are part of the Python -> Go compatibility contract.
+package config
+
+import (
+	"os"
+	"strings"
+)
+
+// Config is populated from the same environment variables used by the
+// Python implementation.
+type Config struct {
+	ConsulURL         string
+	ConsulToken       string
+	AdminPasswd       string
+	ListenAddr        string
+	LogLevel          string
+	SchedulerDisabled bool
+}
+
+// Load reads the environment. The Python version used lower-case names, so
+// those are authoritative; upper-case aliases are accepted for convenience.
+func Load() Config {
+	port := env("port", "2026")
+	listen := env("listen_addr", "0.0.0.0:"+port)
+	return Config{
+		ConsulURL:         strings.TrimRight(env("consul_url", "http://127.0.0.1:8500/v1"), "/"),
+		ConsulToken:       env("consul_token", ""),
+		AdminPasswd:       env("admin_passwd", "123456"),
+		ListenAddr:        listen,
+		LogLevel:          strings.ToUpper(env("log_level", "INFO")),
+		SchedulerDisabled: env("scheduler_disabled", "") == "1" || strings.EqualFold(env("scheduler_disabled", ""), "true"),
+	}
+}
+
+func env(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	if v, ok := os.LookupEnv(strings.ToUpper(key)); ok {
+		return v
+	}
+	return fallback
+}
+
+// Vendors maps the stable vendor key used in Consul/task IDs to the display
+// value consumed by the Vue frontend.
+var Vendors = map[string]string{
+	"alicloud":      "阿里云",
+	"tencent_cloud": "腾讯云",
+	"huaweicloud":   "华为云",
+	"awscloud":      "AWS云",
+}
+
+// Regions contains the same region code -> display-name tables as
+// flask-consul/config.py. "none" is used by resource-group rows.
+var Regions = map[string]map[string]string{
+	"awscloud": {
+		"none":           "无",
+		"us-east-1":      "美国东部（弗吉尼亚州北部）",
+		"us-east-2":      "美国东部（俄亥俄州）",
+		"us-west-1":      "美国西部（北加利福尼亚）",
+		"us-west-2":      "美国西部（俄勒冈州）",
+		"af-south-1":     "非洲（开普敦）",
+		"ap-east-1":      "亚太地区（香港）",
+		"ap-south-1":     "亚太地区（孟买）",
+		"ap-south-2":     "亚太地区（海得拉巴）",
+		"ap-southeast-1": "亚太地区（新加坡）",
+		"ap-southeast-2": "亚太地区（悉尼）",
+		"ap-southeast-3": "亚太地区（雅加达）",
+		"ap-southeast-4": "亚太地区（墨尔本）",
+		"ap-northeast-1": "亚太地区（东京）",
+		"ap-northeast-2": "亚太地区（首尔）",
+		"ap-northeast-3": "亚太地区（大阪）",
+		"ca-central-1":   "加拿大（中央）",
+		"ca-west-1":      "加拿大（卡尔加里）",
+		"eu-central-1":   "欧洲（法兰克福）",
+		"eu-central-2":   "欧洲（苏黎世）",
+		"eu-west-1":      "欧洲（爱尔兰）",
+		"eu-west-2":      "欧洲（伦敦）",
+		"eu-west-3":      "欧洲（巴黎）",
+		"eu-south-1":     "欧洲（米兰）",
+		"eu-south-2":     "欧洲（马德里）",
+		"eu-north-1":     "欧洲（斯德哥尔摩）",
+		"me-south-1":     "中东（巴林）",
+		"me-central-1":   "中东（阿联酋）",
+		"sa-east-1":      "南美洲（圣保罗）",
+		"il-central-1":   "以色列（特拉维夫）",
+	},
+	"huaweicloud": {
+		"none":           "无",
+		"cn-north-219":   "华北-北京金融二",
+		"cn-east-3":      "华东-上海一",
+		"cn-east-2":      "华东-上海二",
+		"cn-south-1":     "华南-广州",
+		"cn-north-1":     "华北-北京一",
+		"cn-north-4":     "华北-北京四",
+		"cn-southwest-2": "西南-贵阳一",
+		"ap-southeast-1": "中国-香港",
+		"ap-southeast-3": "新加坡",
+	},
+	"alicloud": {
+		"none":           "无",
+		"cn-qingdao":     "华北1(青岛)",
+		"cn-beijing":     "华北2(北京)",
+		"cn-zhangjiakou": "华北3(张家口)",
+		"cn-huhehaote":   "华北5(呼和浩特)",
+		"cn-wulanchabu":  "华北6(乌兰察布)",
+		"cn-hangzhou":    "华东1(杭州)",
+		"cn-shanghai":    "华东2(上海)",
+		"cn-shenzhen":    "华南1(深圳)",
+		"cn-heyuan":      "华南2(河源)",
+		"cn-guangzhou":   "华南3(广州)",
+		"cn-chengdu":     "西南1(成都)",
+		"cn-hongkong":    "中国(香港)",
+		"cn-nanjing":     "华东5(南京-本地地域)",
+		"us-east-1":      "美国东部1(弗吉尼亚)",
+		"us-west-1":      "美国(硅谷)",
+		"eu-west-1":      "英国(伦敦)",
+		"eu-central-1":   "德国(法兰克福)",
+		"ap-southeast-1": "新加坡",
+		"ap-northeast-1": "日本(东京)",
+		"ap-south-1":     "印度(孟买)",
+		"ap-southeast-5": "印度尼西亚(雅加达)",
+		"ap-southeast-7": "泰国(曼谷)",
+		"na-south-1":     "墨西哥",
+	},
+	"tencent_cloud": {
+		"none":             "无",
+		"ap-nanjing":       "华东地区(南京)",
+		"ap-shanghai":      "华东地区(上海)",
+		"ap-guangzhou":     "华南地区(广州)",
+		"ap-beijing":       "华北地区(北京)",
+		"ap-tianjin":       "华北地区(天津)",
+		"ap-chengdu":       "西南地区(成都)",
+		"ap-chongqing":     "西南地区(重庆)",
+		"ap-hongkong":      "港澳台地区(中国香港)",
+		"ap-tokyo":         "亚太东北(东京)",
+		"ap-seoul":         "亚太东北(首尔)",
+		"ap-singapore":     "亚太东南(新加坡)",
+		"ap-mumbai":        "亚太南部(孟买)",
+		"na-ashburn":       "美国东部(弗吉尼亚)",
+		"na-siliconvalley": "美国西部(硅谷)",
+		"eu-frankfurt":     "欧洲地区(法兰克福)",
+	},
+}
+
+// VendorDisplay returns the frontend-facing vendor name. Unknown keys are
+// returned as-is so stale tasks do not crash the API.
+func VendorDisplay(vendor string) string {
+	if v, ok := Vendors[vendor]; ok {
+		return v
+	}
+	return vendor
+}
+
+// InternalVendor translates a display name to a Consul vendor key. The second
+// result is false when the value is unknown.
+func InternalVendor(display string) (string, bool) {
+	for key, value := range Vendors {
+		if value == display {
+			return key, true
+		}
+	}
+	return display, false
+}
+
+// RegionDisplay returns the display name for a region code, or "未找到" when
+// the vendor/region pair is absent. Resource Meta uses the same fallback.
+func RegionDisplay(vendor, region string) string {
+	if regions, ok := Regions[vendor]; ok {
+		if name, ok := regions[region]; ok {
+			return name
+		}
+	}
+	return "未找到"
+}
