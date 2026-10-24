@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud/model"
@@ -43,10 +45,30 @@ func (p FixtureProvider) load(ctx context.Context, account string) (fixture, err
 		return fixture{}, cloud.ErrRateLimited
 	case "timeout":
 		return fixture{}, context.DeadlineExceeded
+	case "temporary":
+		return fixture{}, cloud.ErrTemporary
 	default:
+		if status, ok := fixtureHTTPStatus(value.Error); ok {
+			return fixture{}, cloud.HTTPStatusError{StatusCode: status}
+		}
 		return fixture{}, errors.New(value.Error)
 	}
 	return value, nil
+}
+
+// fixtureHTTPStatus accepts http_500 through http_599 so a desensitized
+// fixture can model retryable provider responses without treating arbitrary
+// error text as transient.
+func fixtureHTTPStatus(value string) (int, bool) {
+	statusText, ok := strings.CutPrefix(value, "http_")
+	if !ok {
+		return 0, false
+	}
+	status, err := strconv.Atoi(statusText)
+	if err != nil || status < 500 || status > 599 {
+		return 0, false
+	}
+	return status, true
 }
 
 func (p FixtureProvider) Group(ctx context.Context, account string) (map[string]string, error) {

@@ -4,7 +4,7 @@
 
 ## 输入
 
-阿里云 fixture 位于 `ConsulManager/fixtures/alicloud/{account}`，格式为 `groups`、`ecs`、`rds`、`redis` 四个可选字段；资源字段采用 `internal/cloud/model` 的 JSON 字段。`error` 为 `auth`、`rate_limit`、`timeout` 或其他错误文本时，Provider 返回相应错误，绝不返回成功空集。
+阿里云 fixture 位于 `ConsulManager/fixtures/alicloud/{account}`，格式为 `groups`、`ecs`、`rds`、`redis` 四个可选字段；资源字段采用 `internal/cloud/model` 的 JSON 字段。`error` 为 `auth`、`rate_limit`、`timeout`、`temporary` 或 `http_500` 至 `http_599` 时，Provider 返回相应可分类错误；其他错误文本保持不可重试错误，绝不返回成功空集。
 
 ## 执行
 

@@ -155,6 +155,65 @@ func TestTimeoutRetriesThenSucceeds(t *testing.T) {
 	}
 }
 
+type temporaryProvider struct {
+	calls    int
+	failures int
+	err      error
+}
+
+func (p *temporaryProvider) Group(context.Context, string) (map[string]string, error) {
+	return nil, nil
+}
+func (p *temporaryProvider) ECS(context.Context, string, string, bool) (map[string]model.ECS, error) {
+	p.calls++
+	if p.calls <= p.failures {
+		return nil, p.err
+	}
+	return map[string]model.ECS{"i": {Name: "ok", OSType: "linux", IP: "10.0.0.1"}}, nil
+}
+func (p *temporaryProvider) RDS(context.Context, string, string) (map[string]model.RDS, error) {
+	return nil, nil
+}
+func (p *temporaryProvider) Redis(context.Context, string, string) (map[string]model.Redis, error) {
+	return nil, nil
+}
+
+func TestHTTP5xxRetriesThenSucceeds(t *testing.T) {
+	s, _ := setup(t)
+	p := &temporaryProvider{failures: 2, err: cloud.HTTPStatusError{StatusCode: 503}}
+	s.Providers.Register("temporary", p)
+	if err := s.ECS(context.Background(), "temporary", "main", "cn-hangzhou", false); err != nil {
+		t.Fatal(err)
+	}
+	if p.calls != 3 {
+		t.Fatalf("calls=%d, want 3", p.calls)
+	}
+}
+
+func TestTemporaryErrorRetriesThreeTimesThenWritesFailureRecord(t *testing.T) {
+	s, mock := setup(t)
+	p := &temporaryProvider{failures: 3, err: cloud.ErrTemporary}
+	s.Providers.Register("temporary", p)
+	err := s.ECS(context.Background(), "temporary", "main", "cn-hangzhou", false)
+	if !errors.Is(err, cloud.ErrTemporary) {
+		t.Fatalf("err=%v", err)
+	}
+	if p.calls != 3 {
+		t.Fatalf("calls=%d, want 3", p.calls)
+	}
+	raw, ok := mock.GetKV("ConsulManager/record/jobs/temporary/main/ecs/cn-hangzhou")
+	if !ok {
+		t.Fatal("missing failure record")
+	}
+	var record map[string]any
+	if err := json.Unmarshal(raw, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["status"] != float64(50000) {
+		t.Fatalf("record=%v", record)
+	}
+}
+
 type timeoutProvider struct{ calls int }
 
 func (p *timeoutProvider) Group(context.Context, string) (map[string]string, error) { return nil, nil }

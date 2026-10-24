@@ -173,7 +173,7 @@ func retry(ctx context.Context, call func() error) error {
 	return err
 }
 func retryable(err error) bool {
-	return errors.Is(err, cloud.ErrRateLimited) || errors.Is(err, context.DeadlineExceeded)
+	return errors.Is(err, cloud.ErrRateLimited) || errors.Is(err, cloud.ErrTemporary) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (s *ConsulService) existing(ctx context.Context, vendor, account, kind, region string) (map[string]store.Service, error) {

@@ -17,6 +17,25 @@ var ErrAuthentication = errors.New("cloud provider authentication failed")
 // ErrRateLimited identifies a temporary provider throttle.
 var ErrRateLimited = errors.New("cloud provider rate limited")
 
+// ErrTemporary identifies a provider failure for which retrying may succeed.
+// It is intentionally separate from ErrRateLimited so adapters can preserve
+// the reason while the sync layer applies the same bounded retry policy.
+var ErrTemporary = errors.New("cloud provider temporary failure")
+
+// HTTPStatusError retains the provider HTTP status without coupling adapters
+// to a particular HTTP client. Server-side 5xx responses are temporary.
+type HTTPStatusError struct {
+	StatusCode int
+}
+
+func (e HTTPStatusError) Error() string {
+	return fmt.Sprintf("cloud provider returned HTTP %d", e.StatusCode)
+}
+
+func (e HTTPStatusError) Is(target error) bool {
+	return target == ErrTemporary && e.StatusCode >= 500 && e.StatusCode <= 599
+}
+
 // Provider is the contract from migration baseline section 10.2.
 type Provider interface {
 	Group(ctx context.Context, account string) (map[string]string, error)
