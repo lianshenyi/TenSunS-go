@@ -49,7 +49,7 @@ ssh root@10.0.10.236 'cd /opt/tensuns-go-build-f249639 && \
 | 镜像 | 大小 | 备注 |
 | --- | --- | --- |
 | `tensuns-go:git-f2496396e9f0` | 24.1 MB | 非 root 用户 `tensuns`，`EXPOSE 2026`，内嵌 version/commit/build_date |
-| `tensuns-go-web:git-f2496396e9f0` | 64.3 MB | Nginx 静态站点 + `/api/` 反代 |
+| `tensuns-go-web:git-f2496396e9f0` | 64.9 MB | Nginx 静态站点 + `/api/` 反代 |
 
 后端镜像启动验证（`docker run --rm --entrypoint /usr/local/bin/tensuns`）确认嵌入版本正确：
 
@@ -247,3 +247,70 @@ ssh root@10.0.10.80 'rm /etc/nginx/site-enable/tensuns-go.kylianlian.com.site &&
 | 域名访问验证 | 通过 |
 | 镜像推送 + digest 核对 + 按 digest 试拉 | 通过 |
 | 真实云 / JumpServer 凭据联调 | 未验证（既定外部边界） |
+
+## 11. 独立复核（2026-10-24，构建分发助手复核）
+
+因上游委派任务 `01a16c52-6967-72a6-9a36-5fb88855b346` 因 provider 配额耗尽中断，交付物在本轮独立复核，不依赖原报告的自述。
+
+复核命令与结果：
+
+```bash
+# 远端 digest 与本地 image id 一致
+ssh root@10.0.10.236 'docker buildx imagetools inspect ccr.ccs.tencentyun.com/devops-sre/tensuns-go-backend:git-f2496396e9f0'
+# -> Digest: sha256:c003a588ebba768254e5f3c9aa514e331df6ea3d48b6997a310f66c0bc8e6dab
+ssh root@10.0.10.236 'docker inspect ccr.ccs.tencentyun.com/devops-sre/tensuns-go-backend:git-f2496396e9f0 --format "{{.Id}}"'
+# -> sha256:c003a588ebba768254e5f3c9aa514e331df6ea3d48b6997a310f66c0bc8e6dab  (一致)
+
+# 按 digest 试拉
+ssh root@10.0.10.236 'docker pull ccr.ccs.tencentyun.com/devops-sre/tensuns-go-backend@sha256:c003a588...'
+# -> Status: Image is up to date
+ssh root@10.0.10.236 'docker pull ccr.ccs.tencentyun.com/devops-sre/tensuns-go-frontend@sha256:761afc07...'
+# -> Status: Image is up to date
+
+# 未推 latest
+ssh root@10.0.10.236 'docker pull ccr.ccs.tencentyun.com/devops-sre/tensuns-go-backend:latest'
+# -> Error response from daemon: ... not found
+
+# 前端镜像内容确实来自 f249639：在 /opt/tensuns-go-build-f249639 重新构建
+ssh root@10.0.10.236 'cd /opt/tensuns-go-build-f249639 && docker build \
+  --build-arg NODE_IMAGE=registry.cn-shenzhen.aliyuncs.com/starsl/node:14-alpine \
+  --build-arg NGINX_IMAGE=registry.cn-shenzhen.aliyuncs.com/starsl/nginx:1.24.0-alpine \
+  -t tensuns-go-web:probe-f249639 vue-consul'
+# -> 导出的 amd64 manifest sha256:d04bb357a6b2c787f8db4edda203de9fd661d152135c5fde435f5462d555c88c
+#    与仓库中 frontend:git-f2496396e9f0 的 linux/amd64 manifest 完全一致
+#    （镜像 Created 时间戳沿用 10-23 的构建缓存层，故与首次构建相同）
+
+# 后端镜像版本内嵌正确
+ssh root@10.0.10.236 'docker logs tensuns-go-api | grep "starting TenSunS"'
+# -> version=f2496396e9f0 commit=f2496396e9f0acaafce329fa63f1a4d2e35d6f5a built=2026-10-24T04:57:23Z
+
+# 非 root 运行
+ssh root@10.0.10.236 'docker exec tensuns-go-api id'
+# -> uid=100(tensuns) gid=101(tensuns)
+
+# nginx 配置与仓库中 deploy/ 副本 md5 一致，且配置整体合法
+ssh root@10.0.10.80 'md5sum /etc/nginx/site-enable/tensuns-go.kylianlian.com.site'
+# -> a0111913e0fa8b76e43880d5d44c57d6
+git show agent/go/vide-36:deploy/tensuns-go.kylianlian.com.site | md5sum
+# -> a0111913e0fa8b76e43880d5d44c57d6  (一致)
+ssh root@10.0.10.80 'nginx -t'
+# -> test is successful
+
+# 域名验证
+curl -sS -o /dev/null -w "%{http_code}\n" https://tensuns-go.kylianlian.com/   # 200, <title>TenSunS</title>
+curl -sSI http://tensuns-go.kylianlian.com/                                   # 301 -> https
+curl -sS https://tensuns-go.kylianlian.com/static/js/app.3aa07f65.js          # 200, 209524 bytes
+# 登录与任务列表（经域名）
+# -> /api/user/login code=20000 ; /api/jobs code=20000, 4 个任务
+
+# 代码回归（f249639 干净检出）
+go build ./... && go vet ./... && go test ./...      # 全部通过
+./scripts/smoke.sh                                   # PASS: login, info, jobs, edit/cloud, nodes/res, jms/list, jms/config
+```
+
+复核结论：
+
+- 上表第 10 节「通过」结论经独立复跑全部成立；前端镜像大小原记为 64.3 MB，实际为 64.9 MB，已在本文件第 2 节更正。
+- `scheduler_disabled=1` 保留为最终状态，故 `/api/jobs` 的 `nextime` 为 `无`，属预期行为。
+- 真实云 SDK/AKSK 与真实 JumpServer 凭据联调仍未执行，属既定外部环境验收边界。
+
