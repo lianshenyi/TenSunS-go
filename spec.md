@@ -1,0 +1,26 @@
+# SPEC-001 阿里云 fixture 同步闭环
+
+对应需求：PRD-001、PRD-002、PRD-003、PRD-004。
+
+## 输入
+
+阿里云 fixture 位于 `ConsulManager/fixtures/alicloud/{account}`，格式为 `groups`、`ecs`、`rds`、`redis` 四个可选字段；资源字段采用 `internal/cloud/model` 的 JSON 字段。`error` 为 `auth`、`rate_limit`、`timeout` 或其他错误文本时，Provider 返回相应错误，绝不返回成功空集。
+
+## 执行
+
+1. `cloud.Registry` 找到 `alicloud` fixture Provider。
+2. 同步服务最多尝试三次：仅 `rate_limit`、临时错误和 context deadline 可重试，退避 10ms/20ms；鉴权失败立即停止。
+3. 资源组写 `ConsulManager/assets/alicloud/group/{account}`。
+4. ECS/RDS/Redis 先筛出同一 service、region、account 的旧 Service，删除不再存在的 ID，随后按迁移基线 7.4 与 Python 元数据格式注册当前资源。自定义 IP/端口 KV 仍优先。
+5. 成功写 `ConsulManager/record/jobs/{vendor}/{account}/{kind}[/{region}]`；失败写 `status=50000`、实际错误和失败时间，并保留已有 count/on/off。
+
+## 一致性
+
+Consul 不提供跨 Service 事务。任何删除或注册失败都使本轮失败并保留失败记录；下一次相同 fixture 会再次对账，因此操作幂等、可收敛。单任务由现有 Scheduler 的 job-ID 锁串行。
+
+## 验收用例
+
+- SPEC-001-01：四类资源成功写入，Service 的 ID、Name、Tags、Meta、check 和 record 满足第 7 节。
+- SPEC-001-02：`auth` fixture 写 50000 record，Provider 仅调用一次。
+- SPEC-001-03：限流/超时在有限重试后成功或写失败 record。
+- SPEC-001-04：一次注册失败写失败 record；重跑后 Service 集合收敛，且不会产生重复 ID。

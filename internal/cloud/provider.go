@@ -3,11 +3,19 @@ package cloud
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/lianshenyi/TenSunS-go/internal/cloud/model"
 )
+
+// ErrAuthentication identifies a provider credential rejection. It is not
+// retried because a retry cannot repair credentials.
+var ErrAuthentication = errors.New("cloud provider authentication failed")
+
+// ErrRateLimited identifies a temporary provider throttle.
+var ErrRateLimited = errors.New("cloud provider rate limited")
 
 // Provider is the contract from migration baseline section 10.2.
 type Provider interface {

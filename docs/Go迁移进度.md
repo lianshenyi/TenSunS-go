@@ -20,6 +20,7 @@
 | Consul Store | KV raw/recurse/keys、Service 查询、注册、注销、Health API；Token 请求头。 |
 | 调度器 | 动态 interval、`replace_existing`、同 Job ID 串行、`RunNow`、`NextRun`、优雅关闭。 |
 | 任务加载 | 加载 `ConsulManager/jobs` 与 `ConsulManager/jms/jobs`；识别 5 种旧 `func`，未知任务跳过但不删除。 |
+| 阿里云阶段一 | 脱敏 fixture Provider、统一 ECS/RDS/Redis 模型、资源组 KV 与 Consul Service 写回、执行记录、有限重试及失败记录。仅用于 mock/fixture 验收，不读取真实 AK/SK。 |
 | 鉴权 | 单管理员密码；认证失败返回 HTTP 200 + `code=50000`。 |
 | HTTP 只读接口 | 附录 B 所需的登录、用户信息、任务列表、账户列表、资源列表、JMS 列表，以及 `edit/find`、JMS 配置读取等。 |
 | HTTP 可写接口 | 任务间隔修改、任务删除、JMS 配置保存、JMS 同步开关关闭。 |
@@ -30,8 +31,8 @@
 
 以下接口目前返回 `code=50000` 或尚未接入，不会静默成功：
 
-- 云厂商 Go SDK 适配器：阿里云、腾讯云、华为云、AWS。
-- `internal/sync` 的 Consul 落库实现：资源组、ECS、RDS、Redis 同步。
+- 云厂商 Go SDK 适配器：阿里云（真实 SDK）、腾讯云、华为云、AWS。
+- 腾讯云、华为云、AWS 的 Provider 与资源同步写回。
 - JumpServer V2/V3 客户端与资产同步。
 - `POST /api/jobs` 的 `dialogStatus=create` / `run`。
 - `POST /api/edit/commit`。

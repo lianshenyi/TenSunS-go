@@ -18,12 +18,15 @@ import (
 	"time"
 
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/alicloud"
 	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/httpapi"
 	"github.com/lianshenyi/TenSunS-go/internal/jobs"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
+	syncservice "github.com/lianshenyi/TenSunS-go/internal/sync"
 	"github.com/lianshenyi/TenSunS-go/internal/version"
 )
 
@@ -66,7 +69,9 @@ func main() {
 	tokenSigner := cryptox.NewTokenSigner(skey)
 	authSvc := auth.New(cfg.AdminPasswd, tokenSigner)
 
-	runtime := &jobs.Runtime{}
+	providers := cloud.NewRegistry()
+	providers.Register("alicloud", alicloud.FixtureProvider{Store: st})
+	runtime := &jobs.Runtime{Cloud: &syncservice.ConsulService{Store: st, Providers: providers}}
 	sched := scheduler.New(runtime, logger)
 	defer sched.Close()
 
@@ -80,7 +85,7 @@ func main() {
 		}
 		logger.Info("tasks loaded from Consul", "loaded", loaded, "skipped", skipped)
 		if loaded > 0 {
-			logger.Warn("cloud/JMS execution adapters are not wired in this skeleton; scheduled jobs will log errors until injected")
+			logger.Info("cloud runtime enabled", "providers", providers.Vendors())
 		}
 	}
 
