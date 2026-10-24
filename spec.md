@@ -30,8 +30,9 @@ Consul 不提供跨 Service 事务。任何删除或注册失败都使本轮失�
 对应 PRD-005；唯一兼容基线为 `docs/迁移基线.md` 第 8 节。
 
 1. 读取 node_id、全局及账户级 ecs_info、jms_info 和 Consul ECS Service；解密 Token，使用 `Authorization: Token <token>`。
-2. V3 写 `/assets/hosts/` 的 address/name/accounts/platform；V2 写 `/assets/assets/` 的 ip/hostname/admin_user/platform。两者均建立缺失资源组（含未分组），按 IP 删除缺失资产，且只在名称或节点变化时 PUT。
+2. V3 写 `/assets/hosts/` 的 address/name/accounts/platform；V2 写 `/assets/assets/` 的 ip/hostname/admin_user/platform。两者均建立缺失资源组（含未分组），按 IP 删除缺失资产，且只在名称或节点变化时通过 `PUT /api/v1/assets/{id}/` 更新。
 3. 429、5xx 和 deadline 最多三次；401/403 不重试。错误写 `record/jms/{vendor}/{account}` 的 50000；部分写入后的下一次同步必须收敛。
 4. 成功记录使用 `%m%d/%H:%M` 和父节点资产总数。Scheduler 的 `sync_jms.run` 和手动 `/api/jms/sync` 调用同一客户端；真实凭据联调不属于仓库测试。
 5. `custom_ecs_info` 优先采用账户级非空配置；其 JSON 键按原始声明顺序作大小写不敏感子串匹配，后命中项覆盖前项。同步随后删除名称不匹配的重复 IP 资产，以及 V3 `meta.node.id` 或旧版 `meta.data.id` 标识的 `" (0)"` 空子节点。
 6. V2、V3 各自覆盖正常路径、账户级有序覆盖、重复/空对象边界、单项失败后的重跑收敛及再次运行幂等。
+7. 严格 HTTP fixture 必须拒绝非 `PUT /api/v1/assets/{id}/` 更新路径，并断言 V2/V3 各自更新 payload。429、deadline 和 403 分别断言调用次数（前三者为三次、403 为一次）及最终 `50000` record。手动 `/api/jms/sync` 与 Scheduler→Runtime 均以真实 `jumpserver.Client` 运行，并覆盖 `20000`、`50000` record。

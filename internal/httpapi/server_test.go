@@ -16,6 +16,7 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/consulmock"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/jobs"
+	"github.com/lianshenyi/TenSunS-go/internal/jumpserver"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
 )
@@ -298,6 +299,95 @@ func TestJMSContracts(t *testing.T) {
 	if !ok || bytes.Contains(raw, []byte("new-token")) {
 		t.Fatalf("JMS token was not encrypted in Consul: %s", raw)
 	}
+}
+
+func TestManualJMSSyncUsesRealClientAndRecordsOutcome(t *testing.T) {
+	f := newFixture(t)
+	backend := &jmsHTTPFixture{}
+	jmsServer := httptest.NewServer(backend)
+	defer jmsServer.Close()
+	token, err := f.cipher.Encrypt("fixture-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.PutKV(context.Background(), "ConsulManager/jms/jms_info", map[string]any{"url": jmsServer.URL, "token": token, "ver": "V3"}); err != nil {
+		t.Fatal(err)
+	}
+	client := &jumpserver.Client{Store: f.store, Cipher: f.cipher, HTTP: jmsServer.Client()}
+	api := httptest.NewServer(NewWithJMS(f.store, f.cipher, auth.New(testPassword, cryptox.NewTokenSigner("0123456789abcdef0123456789abcdef")), f.sched, client, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
+	defer api.Close()
+	original := f.api
+	f.api = api
+	defer func() { f.api = original }()
+	authToken := f.login(t)
+
+	_, body := f.request(t, http.MethodPost, "/api/jms/sync", authToken, map[string]any{"jms_sync": map[string]any{"vendor": "阿里云", "account": "main"}})
+	if body["code"] != float64(20000) {
+		t.Fatalf("success response = %#v", body)
+	}
+	assertJMSRecordStatus(t, f.mock, 20000)
+	backend.failChildren = http.StatusForbidden
+	_, body = f.request(t, http.MethodPost, "/api/jms/sync", authToken, map[string]any{"jms_sync": map[string]any{"vendor": "阿里云", "account": "main"}})
+	if body["code"] != float64(50000) {
+		t.Fatalf("failure response = %#v", body)
+	}
+	if backend.childrenCalls != 5 { // success GET/POST/GET/tree, then 403 fails once.
+		t.Fatalf("children calls = %d", backend.childrenCalls)
+	}
+	assertJMSRecordStatus(t, f.mock, 50000)
+}
+
+func assertJMSRecordStatus(t *testing.T, mock *consulmock.Server, want int) {
+	t.Helper()
+	raw, ok := mock.GetKV("ConsulManager/record/jms/alicloud/main")
+	if !ok {
+		t.Fatal("JMS record missing")
+	}
+	var record map[string]any
+	if err := json.Unmarshal(raw, &record); err != nil || record["status"] != float64(want) {
+		t.Fatalf("JMS record = %s err=%v", raw, err)
+	}
+}
+
+// jmsHTTPFixture implements only the JumpServer endpoints that the real
+// client needs. It deliberately returns 404 for unrecognized paths so API
+// integration tests cannot pass through an accidental placeholder endpoint.
+type jmsHTTPFixture struct {
+	childrenCalls int
+	failChildren  int
+}
+
+func (h *jmsHTTPFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Authorization") != "Token fixture-token" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if strings.Contains(r.URL.Path, "/children/") {
+		h.childrenCalls++
+		if h.failChildren != 0 {
+			w.WriteHeader(h.failChildren)
+			return
+		}
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": "ungrouped", "value": "未分组"}})
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		return
+	}
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/assets/assets/") {
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+		return
+	}
+	if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/nodes/children/tree/") {
+		_ = json.NewEncoder(w).Encode([]map[string]any{})
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/v1/assets/hosts/" {
+		w.WriteHeader(http.StatusCreated)
+		return
+	}
+	w.WriteHeader(http.StatusNotFound)
 }
 
 func TestJobUpdateAndDelete(t *testing.T) {

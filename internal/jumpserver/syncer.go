@@ -175,7 +175,9 @@ func (c *Client) run(ctx context.Context, vendor, account string) error {
 				wanted = "未分组"
 			}
 			if a.Name != h.Name || a.Group != wanted {
-				if err := c.put(ctx, cfg, "/api/v1/assets/assets/"+a.ID+"/", c.payload(cfg, h, node, vendor, account)); err != nil {
+				// Both legacy versions use the version-neutral asset endpoint for
+				// updates; only their create endpoints and payload fields differ.
+				if err := c.put(ctx, cfg, "/api/v1/assets/"+a.ID+"/", c.payload(cfg, h, node, vendor, account)); err != nil {
 					return err
 				}
 			}

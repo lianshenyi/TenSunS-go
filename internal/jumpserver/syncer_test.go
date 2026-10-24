@@ -165,6 +165,89 @@ func TestClientPartialFailureRerunsConvergeForV2AndV3(t *testing.T) {
 	}
 }
 
+func TestClientUpdatesV2AndV3ThroughCanonicalAssetEndpoint(t *testing.T) {
+	for _, version := range []string{"V2", "V3"} {
+		t.Run(version, func(t *testing.T) {
+			server, jms := newJMS(t)
+			defer server.Close()
+			jms.strictUpdates = true
+			jms.extraAssets = []map[string]any{{
+				"id": "right", "address": "10.0.0.1", "name": "old-name",
+				"nodes_display": []any{"/parent/旧分组"},
+			}}
+			client, _ := testClient(t, server.URL, version)
+			if err := client.Run(context.Background(), "alicloud", "main"); err != nil {
+				t.Fatal(err)
+			}
+			jms.mu.Lock()
+			defer jms.mu.Unlock()
+			if len(jms.updatePaths) != 1 || jms.updatePaths[0] != "/api/v1/assets/right/" {
+				t.Fatalf("update paths = %#v", jms.updatePaths)
+			}
+			payload := jms.updateBodies[0]
+			if version == "V3" {
+				if payload["address"] != "10.0.0.1" || payload["name"] != "web-1" || payload["accounts"] == nil || payload["platform"] != "1" {
+					t.Fatalf("V3 update payload = %#v", payload)
+				}
+			} else if payload["ip"] != "10.0.0.1" || payload["hostname"] != "web-1" || payload["admin_user"] != "root" || payload["platform"] != "Linux" {
+				t.Fatalf("V2 update payload = %#v", payload)
+			}
+		})
+	}
+}
+
+func TestClientRetriesRateLimitAndDeadlineButNotForbidden(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		deadline  bool
+		wantCalls int
+	}{
+		{name: "rate limited", status: http.StatusTooManyRequests, wantCalls: 3},
+		{name: "deadline", deadline: true, wantCalls: 3},
+		{name: "forbidden", status: http.StatusForbidden, wantCalls: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server, jms := newJMS(t)
+			defer server.Close()
+			jms.failChildren = tc.status
+			client, mock := testClient(t, server.URL, "V3")
+			var deadlineCalls int
+			if tc.deadline {
+				client.HTTP = &http.Client{Transport: deadlineTransport{calls: &deadlineCalls}}
+			}
+			if err := client.Run(context.Background(), "alicloud", "main"); err == nil {
+				t.Fatal("sync unexpectedly succeeded")
+			}
+			calls := deadlineCalls
+			if !tc.deadline {
+				jms.mu.Lock()
+				calls = jms.childrenCalls
+				jms.mu.Unlock()
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("calls = %d, want %d", calls, tc.wantCalls)
+			}
+			raw, ok := mock.GetKV("ConsulManager/record/jms/alicloud/main")
+			if !ok {
+				t.Fatal("missing failure record")
+			}
+			var record map[string]any
+			if err := json.Unmarshal(raw, &record); err != nil || record["status"] != float64(50000) {
+				t.Fatalf("record = %s err=%v", raw, err)
+			}
+		})
+	}
+}
+
+type deadlineTransport struct{ calls *int }
+
+func (t deadlineTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	*t.calls++
+	return nil, context.DeadlineExceeded
+}
+
 func testClient(t *testing.T, url, version string) (*Client, *consulmock.Server) {
 	t.Helper()
 	mock := consulmock.New()
@@ -219,6 +302,9 @@ type fakeJMS struct {
 	childrenCalls, hostPosts, assetPosts, failChildren int
 	failAssetPosts                                     int
 	assetCalls                                         int
+	strictUpdates                                      bool
+	updatePaths                                        []string
+	updateBodies                                       []map[string]any
 }
 
 type fakeNode struct {
@@ -325,6 +411,22 @@ func newJMS(t *testing.T) (*httptest.Server, *fakeJMS) {
 			}
 			state.emptyNodes = remaining
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method == http.MethodPut {
+			if state.strictUpdates && !strings.HasPrefix(r.URL.Path, "/api/v1/assets/") {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if !strings.HasPrefix(r.URL.Path, "/api/v1/assets/") || strings.HasPrefix(r.URL.Path, "/api/v1/assets/assets/") {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			state.updatePaths = append(state.updatePaths, r.URL.Path)
+			state.updateBodies = append(state.updateBodies, body)
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
