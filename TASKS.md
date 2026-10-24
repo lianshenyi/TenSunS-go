@@ -11,3 +11,4 @@
 - [x] TASK-009（PRD-003 / SPEC-001）：补齐 Scheduler → Runtime → fixture → 四类 record 的端到端用例。
 - [x] TASK-010（PRD-005 / SPEC-002）：实现 JumpServer V2/V3 配置读取、Token 鉴权、节点及资产同步。
 - [x] TASK-011（PRD-005 / SPEC-002）：接入 Runtime、手动同步入口和 JMS record，覆盖重试与幂等。
+- [x] TASK-012（PRD-006 / SPEC-002）：实现账户级有序 `custom_ecs_info` 覆盖、重复 IP 与空节点清理，并补 V2/V3 收敛和幂等回归。
