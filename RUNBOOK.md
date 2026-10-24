@@ -16,6 +16,8 @@ consul_url=http://127.0.0.1:18500/v1 admin_passwd=<PASSWORD> go run ./cmd/tensun
 
 fixture Provider 支持 `alicloud`、`tencent_cloud`、`huaweicloud`、`awscloud`，并仅读取 `ConsulManager/fixtures/<VENDOR>/<ACCOUNT>`。fixture 可含 `groups`、`ecs`、`rds`、`redis`，或 `error: auth|rate_limit|timeout|temporary|http_500` 至 `http_599`。无 fixture 时任务失败并写 record，不会伪造同步成功；不要把真实 AK/SK 或生产地址写入 fixture。
 
+JumpServer 同步读取 `ConsulManager/jms/jms_info`（`url`、加密 `token`、`ver=V2|V3`）、`jms/<vendor>/<account>/node_id` 和全局或账户级 `ecs_info`。测试使用 `httptest` fixture，绝不写入真实 Token。请求使用 `Authorization: Token <token>`；429、5xx、临时网络/超时最多重试三次，401/403 不重试。失败查看 `ConsulManager/record/jms/<vendor>/<account>`；重跑继续对账以收敛部分写入。
+
 ## 测试数据
 
 `cmd/consulmock` 的 `SeedDemo` 提供 `main` 账户与基础资源；同步单测自行写入脱敏 fixture。登录账号为 `admin`，密码来自 `admin_passwd`。

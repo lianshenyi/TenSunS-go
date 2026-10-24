@@ -10,11 +10,12 @@
 - PRD-002：将资源组写入既有 group KV；将资源写入既有 Consul Service 命名、Tags、Meta 和 TCP check 格式。
 - PRD-003：调度任务执行后写入既有 record KV；失败保留上次数量但使用 `status=50000`。
 - PRD-004：429、5xx 和超时有限重试；鉴权错误不重试；重复执行收敛到相同 Service 集合。
+- PRD-005：按第 8 节从 Consul 读取 JumpServer V2/V3 配置、ECS Service 与账户级覆盖，使用脱敏 HTTP fixture 完成节点和资产对账。
 
 ## 非目标
 
-不接入任意云 SDK 或真实 AK/SK；不实现 JumpServer、写 API 或改变第 8 节 JumpServer 行为。
+不接入任意云 SDK/AKSK 或真实 JumpServer 凭据；真实 JumpServer 联调是外部环境验收边界。
 
 ## 验收
 
-以 `docs/迁移基线.md` 第 7 节为资源模型与 Consul 契约唯一基线。四云 fixture 覆盖成功、鉴权失败、限流/临时/5xx、超时、部分写入失败和幂等重试；Scheduler→Runtime→fixture 的端到端路径写出四类 record。
+资源同步以第 7 节为基线，JumpServer 以第 8 节为唯一兼容基线。V2/V3 fixture 覆盖 Token 鉴权、节点/资产对账、临时/5xx 重试、失败 record、幂等重跑与 Scheduler→Runtime 端到端。

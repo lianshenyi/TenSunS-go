@@ -83,10 +83,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "/v1/agent/service/"):
 		s.handleService(w, strings.TrimPrefix(path, "/v1/agent/service/"))
 	case strings.HasPrefix(path, "/v1/health/service/"):
-		writeJSON(w, http.StatusOK, []any{})
+		s.handleHealthService(w, strings.TrimPrefix(path, "/v1/health/service/"))
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) handleHealthService(w http.ResponseWriter, name string) {
+	s.mu.RLock()
+	out := make([]store.HealthInstance, 0)
+	for _, service := range s.services {
+		if service.Name == name {
+			out = append(out, store.HealthInstance{Service: service, Checks: []store.HealthCheck{}})
+		}
+	}
+	s.mu.RUnlock()
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleKV(w http.ResponseWriter, r *http.Request, key string) {

@@ -27,6 +27,7 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/httpapi"
 	"github.com/lianshenyi/TenSunS-go/internal/jobs"
+	"github.com/lianshenyi/TenSunS-go/internal/jumpserver"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
 	syncservice "github.com/lianshenyi/TenSunS-go/internal/sync"
@@ -77,7 +78,11 @@ func main() {
 	providers.Register("tencent_cloud", tencentcloud.NewFixtureProvider(st))
 	providers.Register("huaweicloud", huaweicloud.NewFixtureProvider(st))
 	providers.Register("awscloud", awscloud.NewFixtureProvider(st))
-	runtime := &jobs.Runtime{Cloud: &syncservice.ConsulService{Store: st, Providers: providers}}
+	jmsClient := &jumpserver.Client{Store: st, Cipher: cipher, HTTP: &http.Client{Timeout: 10 * time.Minute}}
+	runtime := &jobs.Runtime{
+		Cloud: &syncservice.ConsulService{Store: st, Providers: providers},
+		JMS:   jmsClient,
+	}
 	sched := scheduler.New(runtime, logger)
 	defer sched.Close()
 
@@ -95,7 +100,7 @@ func main() {
 		}
 	}
 
-	api := httpapi.New(st, cipher, authSvc, sched, logger)
+	api := httpapi.NewWithJMS(st, cipher, authSvc, sched, jmsClient, logger)
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           api.Handler(),

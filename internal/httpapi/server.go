@@ -14,6 +14,7 @@ import (
 
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
+	"github.com/lianshenyi/TenSunS-go/internal/jumpserver"
 	"github.com/lianshenyi/TenSunS-go/internal/store"
 )
 
@@ -31,6 +32,7 @@ type Server struct {
 	cipher *cryptox.Cipher
 	auth   *auth.Service
 	jobs   JobScheduler
+	jms    jumpserver.Syncer
 	logger *slog.Logger
 	mux    *http.ServeMux
 }
@@ -38,10 +40,16 @@ type Server struct {
 // New builds the API server. jobs may be nil in read-only tests; handlers
 // then degrade nextime to "无" and mutations return a business error.
 func New(st store.Store, cipher *cryptox.Cipher, authSvc *auth.Service, jobs JobScheduler, logger *slog.Logger) *Server {
+	return NewWithJMS(st, cipher, authSvc, jobs, nil, logger)
+}
+
+// NewWithJMS adds the real JMS sync dependency while retaining the read-only
+// constructor used by compatibility tests and consumers.
+func NewWithJMS(st store.Store, cipher *cryptox.Cipher, authSvc *auth.Service, jobs JobScheduler, jms jumpserver.Syncer, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s := &Server{store: st, cipher: cipher, auth: authSvc, jobs: jobs, logger: logger}
+	s := &Server{store: st, cipher: cipher, auth: authSvc, jobs: jobs, jms: jms, logger: logger}
 	s.mux = http.NewServeMux()
 	s.routes()
 	return s

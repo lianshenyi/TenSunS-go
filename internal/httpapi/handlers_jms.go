@@ -55,7 +55,7 @@ func (s *Server) handleJMS(w http.ResponseWriter, r *http.Request) {
 		case "switch":
 			s.jmsSwitch(w, r)
 		case "sync":
-			s.jmsSyncPlaceholder(w)
+			s.jmsSync(w, r)
 		default:
 			s.notFound(w, r)
 		}
@@ -366,11 +366,33 @@ func (s *Server) jmsSwitch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": fmt.Sprintf("【%s/%s】同步功能关闭！", vendor, account)})
 }
 
-func (s *Server) jmsSyncPlaceholder(w http.ResponseWriter) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"code": 50000,
-		"data": "Go 迁移阶段尚未实现：JumpServer V2/V3 同步器尚未接入。",
-	})
+func (s *Server) jmsSync(w http.ResponseWriter, r *http.Request) {
+	if s.jms == nil {
+		s.businessError(w, fmt.Errorf("JumpServer sync is not configured"))
+		return
+	}
+	var req struct {
+		Sync map[string]any `json:"jms_sync"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		s.businessError(w, err)
+		return
+	}
+	vendor, ok := config.InternalVendor(stringValue(req.Sync["vendor"]))
+	if !ok {
+		s.businessError(w, fmt.Errorf("unknown vendor"))
+		return
+	}
+	account := stringValue(req.Sync["account"])
+	if account == "" {
+		s.businessError(w, fmt.Errorf("account is missing"))
+		return
+	}
+	if err := s.jms.Run(r.Context(), vendor, account); err != nil {
+		s.businessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": "同步资源成功！"})
 }
 
 func protocolPort(value any) string {

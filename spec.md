@@ -24,3 +24,12 @@ Consul 不提供跨 Service 事务。任何删除或注册失败都使本轮失�
 - SPEC-001-02：三家新增云的 `auth` fixture 写 50000 record 且不重试；限流/临时/5xx、超时最多三次后写失败 record。
 - SPEC-001-03：一次注册失败写失败 record；重跑后 Service 集合收敛，且不会产生重复 ID。
 - SPEC-001-04：Scheduler 加载四个任务，依次经 Runtime 与 fixture Provider 执行，并写出 group/ECS/RDS/Redis 四类成功 record。
+
+## SPEC-002 JumpServer V2/V3 fixture 同步闭环
+
+对应 PRD-005；唯一兼容基线为 `docs/迁移基线.md` 第 8 节。
+
+1. 读取 node_id、全局及账户级 ecs_info、jms_info 和 Consul ECS Service；解密 Token，使用 `Authorization: Token <token>`。
+2. V3 写 `/assets/hosts/` 的 address/name/accounts/platform；V2 写 `/assets/assets/` 的 ip/hostname/admin_user/platform。两者均建立缺失资源组（含未分组），按 IP 删除缺失资产，且只在名称或节点变化时 PUT。
+3. 429、5xx 和 deadline 最多三次；401/403 不重试。错误写 `record/jms/{vendor}/{account}` 的 50000；部分写入后的下一次同步必须收敛。
+4. 成功记录使用 `%m%d/%H:%M` 和父节点资产总数。Scheduler 的 `sync_jms.run` 和手动 `/api/jms/sync` 调用同一客户端；真实凭据联调不属于仓库测试。
