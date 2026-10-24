@@ -19,15 +19,16 @@
 - 动态 interval 调度器、任务加载、任务解析。
 - 登录、用户信息、任务列表、云账户、云资源列表、JumpServer 列表/配置等读接口。
 - `cmd/consulmock` 内存 Consul 与 `scripts/smoke.sh` 兼容性冒烟测试。
+- 阿里云、腾讯云、华为云、AWS 四家云的 fixture/mock Provider（`internal/cloud/*`），统一资源模型与 Consul KV/Service 写回闭环（`internal/sync`）。
+- 错误分类与重试：仅 5xx/临时错误、限流与超时最多重试三次，鉴权不重试；部分写入失败后重跑收敛，同 Job 串行、重复执行幂等。
+- JumpServer V2/V3 真实同步器（`internal/jumpserver`），含账户级 `custom_ecs_info` 有序覆盖、重复 IP 清理与空节点删除。
 
 尚未实现：
 
-- 阿里云、腾讯云、华为云、AWS 的 Go 同步适配器。
-- 同步结果写回 Consul。
-- JumpServer Go 客户端。
-- 新建/运行任务、云账户提交、自定义实例保存、JumpServer 首次同步等写接口。
+- 四家云厂商的真实 SDK / AKSK 凭据接入（当前为 fixture/mock，真实凭据联调属外部环境验收边界）。
+- 新建/运行任务、云账户提交、自定义实例保存等写接口。
 
-未实现部分会返回业务码 `50000` 或暂不提供；在适配器接入前，不要用 Go 进程接管生产同步任务。
+未实现部分会返回业务码 `50000` 或暂不提供；在真实云凭据联调完成前，不要用 Go 进程接管生产同步任务，生产环境保持 `scheduler_disabled=1`。
 
 ## 3. 仓库结构
 
@@ -63,6 +64,89 @@ Go 代码要求：
 - Consul 任务 KV 的 `func`、`args`、`id` 必须兼容 Python 版本，禁止随意改名。
 
 ## 5. 部署验证记录
+
+### 5.1 阶段一至三验收后的镜像发布与域名上线（2026-10-24）
+
+验证提交：`f2496396e9f0acaafce329fa63f1a4d2e35d6f5a`（`fix(jumpserver): verify canonical asset updates`），分支 `agent/go/vide-36`。
+
+本次为构建 / 分发验证，代码侧未做任何改动，源码通过 `git archive` 从已验收提交导出：
+
+```bash
+git archive f249639 | tar -x -C /tmp/tensuns-release-f249639
+rsync -az --delete --exclude='.git' --exclude='.multica' \
+  /tmp/tensuns-release-f249639/ root@10.0.10.236:/opt/tensuns-go-build-f249639/
+```
+
+镜像构建（构建机 10.0.10.236）：
+
+```bash
+# 后端
+cd /opt/tensuns-go-build-f249639
+docker build --build-arg VERSION=f2496396e9f0 \
+  --build-arg COMMIT=f2496396e9f0acaafce329fa63f1a4d2e35d6f5a \
+  --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  -t tensuns-go:git-f2496396e9f0 .
+
+# 前端（本机 Docker Hub 镜像不可达，使用可访问的基础镜像）
+docker build \
+  --build-arg NODE_IMAGE=registry.cn-shenzhen.aliyuncs.com/starsl/node:14-alpine \
+  --build-arg NGINX_IMAGE=registry.cn-shenzhen.aliyuncs.com/starsl/nginx:1.24.0-alpine \
+  -t tensuns-go-web:git-f2496396e9f0 vue-consul
+```
+
+镜像仓库发布（`ccr.ccs.tencentyun.com`，命名空间 `devops-sre`，使用目标机已有登录态，不重新登录、不输出凭据）：
+
+| 镜像 | 标签 | digest |
+| --- | --- | --- |
+| `devops-sre/tensuns-go-backend` | `git-f2496396e9f0` | `sha256:c003a588ebba768254e5f3c9aa514e331df6ea3d48b6997a310f66c0bc8e6dab` |
+| `devops-sre/tensuns-go-frontend` | `git-f2496396e9f0` | `sha256:761afc07f71437b6e67ce1db77b3a501db37b9470221d0e459f6e1f46bd87c66` |
+
+标签只用不可变标签 `git-<commit-sha12>`，不推 `latest`。发布后以 `docker buildx imagetools inspect` 的 index digest 与本地 `docker inspect --format '{{.Id}}'` 核对一致，并按 digest 试拉确认可拉取。
+
+部署与验证：
+
+```bash
+# 后端
+docker rm -f tensuns-go-api 2>/dev/null || true
+docker run -d --name tensuns-go-api --network tensuns-go-net \
+  -p 0.0.0.0:2026:2026 \
+  --env-file /opt/tensuns-go-verify/tensuns.env \
+  tensuns-go:git-f2496396e9f0
+
+# 前端
+docker rm -f tensuns-go-web 2>/dev/null || true
+docker run -d --name tensuns-go-web --network tensuns-go-net \
+  -p 0.0.0.0:1026:1026 tensuns-go-web:git-f2496396e9f0
+
+# 冒烟：仅在调度器启用时校验 nextime，验证完恢复 scheduler_disabled=1
+PW=$(ssh root@10.0.10.236 'cat /opt/tensuns-go-verify/admin_passwd')
+python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
+
+# nginx 反代（10.0.10.80），新增独立站点文件，不改动既有 conf
+install -m 644 /tmp/tensuns-go.kylianlian.com.site \
+  /etc/nginx/site-enable/tensuns-go.kylianlian.com.site
+nginx -t && nginx -s reload
+```
+
+本次验证结果：
+
+- 本地 `go test ./...` 全部通过；后端镜像内嵌 version/commit 正确，进程以非 root 用户 `tensuns` 运行。
+- 后端成功连接真实 Consul；调度器临时启用后 5 个任务加载成功，`cloud runtime enabled` 列出四云 Provider。
+- 冒烟测试通过：`PASS: login, info, jobs, edit/cloud, nodes/res, jms/list, jms/config`。
+- 前端 `http://10.0.10.236:1026` 返回 200；经 Nginx 代理的登录接口返回 `20000`，`/api/jobs` 返回 4 个云任务。
+- 域名 `https://tensuns-go.kylianlian.com` 返回 200（`<title>TenSunS</title>`），HTTP 301 跳 HTTPS；`/api/user/login` 返回 `20000`，`/api/jobs` 返回 4 个任务，静态 JS 正常。
+- 两个镜像的远端 index digest 与本地 image id 一致，按 digest 试拉成功。
+
+当前保留状态：
+
+- `tensuns-go-api` 最终以 `scheduler_disabled=1` 运行；真实云 SDK/AKSK 与真实 JumpServer 凭据未联调前不启用调度器。
+- 因此最终状态下 `/api/jobs` 的 `nextime` 为 `无`，这是预期行为，不是回归。
+- 演示数据中的 JumpServer 地址和 Token 仅用于测试，不是真实凭据。
+- 容器规格备份在 `/opt/tensuns-go-verify/*.inspect.bak.*`，env 备份在 `/opt/tensuns-go-verify/tensuns.env.bak.*`。
+
+回滚：容器侧改回旧标签 `tensuns-go:visual-20261023-r4` / `tensuns-go-web:visual-20261023-r4`；nginx 侧删除 `/etc/nginx/site-enable/tensuns-go.kylianlian.com.site` 后 `nginx -t && nginx -s reload`。回滚不删镜像。
+
+### 5.2 初次 Flask → Go 迁移验证（2026-10-23）
 
 验证日期：2026-10-23。
 
@@ -143,7 +227,7 @@ python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
 
 ## 7. 后续优先级
 
-1. 实现四家云厂商的 Go 适配器，并补真实 Consul 写入。
-2. 实现 JumpServer V2/V3 客户端与同步流程。
+1. 接入四家云厂商的真实 SDK / AKSK 凭据，替换当前 fixture Provider。
+2. 完成真实 JumpServer 凭据联调与运行验证。
 3. 补齐任务新建/立即运行、云账户提交、自定义实例写接口。
 4. 为写接口和同步流程补充集成测试，再考虑启用生产调度。
