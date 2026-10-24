@@ -20,6 +20,9 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud/alicloud"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/awscloud"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/huaweicloud"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/tencentcloud"
 	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/httpapi"
@@ -71,6 +74,9 @@ func main() {
 
 	providers := cloud.NewRegistry()
 	providers.Register("alicloud", alicloud.FixtureProvider{Store: st})
+	providers.Register("tencent_cloud", tencentcloud.NewFixtureProvider(st))
+	providers.Register("huaweicloud", huaweicloud.NewFixtureProvider(st))
+	providers.Register("awscloud", awscloud.NewFixtureProvider(st))
 	runtime := &jobs.Runtime{Cloud: &syncservice.ConsulService{Store: st, Providers: providers}}
 	sched := scheduler.New(runtime, logger)
 	defer sched.Close()

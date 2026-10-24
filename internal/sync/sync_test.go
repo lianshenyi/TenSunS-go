@@ -5,12 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud/alicloud"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/awscloud"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/huaweicloud"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud/model"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/tencentcloud"
+	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/consulmock"
 	"github.com/lianshenyi/TenSunS-go/internal/store"
 	consulstore "github.com/lianshenyi/TenSunS-go/internal/store/consul"
@@ -38,6 +44,8 @@ func fixture() map[string]any {
 
 func TestFixtureSyncWritesCompatibleResourcesAndIsIdempotent(t *testing.T) {
 	s, mock := setup(t)
+	capture := &capturingStore{Store: s.Store, registrations: make(map[string]store.ServiceRegistration)}
+	s.Store = capture
 	if err := mock.SetKV("ConsulManager/fixtures/alicloud/main", fixture()); err != nil {
 		t.Fatal(err)
 	}
@@ -62,9 +70,8 @@ func TestFixtureSyncWritesCompatibleResourcesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("services=%v err=%v", services, err)
 	}
 	got := services["i-1"]
-	if got.Meta["team"] != "ops" || got.Meta["bad-key"] != "" || got.Meta["stat"] != "on" || got.Port != 9100 {
-		t.Fatalf("unexpected ecs service: %+v", got)
-	}
+	assertECS(t, got, "alicloud", "cn-hangzhou", capture.registrations["i-1"])
+	assertGroupRDSRedis(t, s, mock, "alicloud", "main", "cn-hangzhou", capture.registrations)
 	raw, ok := mock.GetKV("ConsulManager/record/jobs/alicloud/main/ecs/cn-hangzhou")
 	if !ok {
 		t.Fatal("missing execution record")
@@ -75,6 +82,204 @@ func TestFixtureSyncWritesCompatibleResourcesAndIsIdempotent(t *testing.T) {
 	}
 	if record["status"] != float64(20000) || record["count"] != float64(1) {
 		t.Fatalf("record=%v", record)
+	}
+}
+
+func assertECS(t *testing.T, got store.Service, vendor, region string, registration store.ServiceRegistration) {
+	t.Helper()
+	if got.Name != vendor+"_main_ecs" || got.Address != "10.0.0.1" || got.Port != 9100 || registration.Check == nil || registration.Check.TCP != "10.0.0.1:9100" || registration.Check.Interval != "60s" {
+		t.Fatalf("unexpected ecs service: %+v", got)
+	}
+	wantMeta := map[string]string{"iid": "i-1", "name": "web", "region": config.RegionDisplay(vendor, region), "group": "生产", "instance": "10.0.0.1:9100", "account": "main", "vendor": config.VendorDisplay(vendor), "os": "linux", "cpu": "2核", "mem": "4GB", "exp": "按量", "stat": "on", "team": "ops"}
+	for key, want := range wantMeta {
+		if got.Meta[key] != want {
+			t.Fatalf("ecs meta[%q]=%q, want %q: %+v", key, got.Meta[key], want, got.Meta)
+		}
+	}
+	if got.Meta["bad-key"] != "" || len(got.Tags) != 3 || got.Tags[0] != "ON" || got.Tags[1] != "linux" || got.Tags[2] != region {
+		t.Fatalf("unexpected ecs tags/meta: %+v", got)
+	}
+}
+
+func assertGroupRDSRedis(t *testing.T, s *ConsulService, mock *consulmock.Server, vendor, account, region string, registrations map[string]store.ServiceRegistration) {
+	t.Helper()
+	raw, ok := mock.GetKV(groupPath(vendor, account))
+	if !ok || string(raw) != `{"rg-1":"生产"}` {
+		t.Fatalf("group fixture was not persisted: %s", raw)
+	}
+	for _, check := range []struct {
+		kind string
+		id   string
+		meta map[string]string
+		tags []string
+		port int
+	}{
+		{"rds", "rm-1", map[string]string{"iid": "rm-1", "name": "mysql", "region": config.RegionDisplay(vendor, region), "group": "生产", "instance": "db.local:3306", "account": account, "vendor": config.VendorDisplay(vendor), "itype": "主实例", "disk": "20GB", "cpu": "2核", "mem": "4GB", "ver": "8.0", "domain": "db.local", "exp": "按量", "stat": "on", "team": "无"}, []string{"ON", "主实例", "8.0", region}, 3306},
+		{"redis", "r-1", map[string]string{"iid": "r-1", "name": "cache", "region": config.RegionDisplay(vendor, region), "group": "生产", "instance": "cache.local:6379", "account": account, "vendor": config.VendorDisplay(vendor), "itype": "主从", "mem": "1024MB", "ver": "6.0", "ip": "10.0.0.3", "exp": "-", "stat": "on"}, []string{"ON", "主从", "6.0", region}, 6379},
+	} {
+		services, err := s.Store.Services(context.Background(), `Service == "`+vendor+`_`+account+`_`+check.kind+`" and "`+region+`" in Tags and Meta.account == "`+account+`"`)
+		if err != nil || len(services) != 1 {
+			t.Fatalf("%s services=%v err=%v", check.kind, services, err)
+		}
+		got := services[check.id]
+		registration := registrations[check.id]
+		if got.Port != check.port || registration.Check == nil || registration.Check.TCP != got.Address+":"+strconv.Itoa(check.port) || registration.Check.Interval != "60s" || !slices.Equal(got.Tags, check.tags) {
+			t.Fatalf("unexpected %s service: %+v", check.kind, got)
+		}
+		for key, want := range check.meta {
+			if got.Meta[key] != want {
+				t.Fatalf("%s meta[%q]=%q, want %q: %+v", check.kind, key, got.Meta[key], want, got.Meta)
+			}
+		}
+	}
+}
+
+func TestPhaseTwoFixtureProvidersWriteAllResourceKinds(t *testing.T) {
+	for _, tc := range []struct {
+		vendor   string
+		provider cloud.Provider
+	}{
+		{"tencent_cloud", nil},
+		{"huaweicloud", nil},
+		{"awscloud", nil},
+	} {
+		t.Run(tc.vendor, func(t *testing.T) {
+			s, mock := setup(t)
+			capture := &capturingStore{Store: s.Store, registrations: make(map[string]store.ServiceRegistration)}
+			s.Store = capture
+			switch tc.vendor {
+			case "tencent_cloud":
+				tc.provider = tencentcloud.NewFixtureProvider(s.Store)
+			case "huaweicloud":
+				tc.provider = huaweicloud.NewFixtureProvider(s.Store)
+			case "awscloud":
+				tc.provider = awscloud.NewFixtureProvider(s.Store)
+			}
+			s.Providers.Register(tc.vendor, tc.provider)
+			if err := mock.SetKV("ConsulManager/fixtures/"+tc.vendor+"/main", fixture()); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Group(context.Background(), tc.vendor, "main"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.ECS(context.Background(), tc.vendor, "main", "cn-hangzhou", false); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.RDS(context.Background(), tc.vendor, "main", "cn-hangzhou"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Redis(context.Background(), tc.vendor, "main", "cn-hangzhou"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Group(context.Background(), tc.vendor, "main"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.ECS(context.Background(), tc.vendor, "main", "cn-hangzhou", false); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.RDS(context.Background(), tc.vendor, "main", "cn-hangzhou"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Redis(context.Background(), tc.vendor, "main", "cn-hangzhou"); err != nil {
+				t.Fatal(err)
+			}
+			services, err := s.Store.Services(context.Background(), `Service == "`+tc.vendor+`_main_ecs" and "cn-hangzhou" in Tags and Meta.account == "main"`)
+			if err != nil || len(services) != 1 {
+				t.Fatalf("services=%v err=%v", services, err)
+			}
+			assertECS(t, services["i-1"], tc.vendor, "cn-hangzhou", capture.registrations["i-1"])
+			assertGroupRDSRedis(t, s, mock, tc.vendor, "main", "cn-hangzhou", capture.registrations)
+		})
+	}
+}
+
+func TestPhaseTwoPartialWriteRerunsConverge(t *testing.T) {
+	for _, vendor := range []string{"tencent_cloud", "huaweicloud", "awscloud"} {
+		t.Run(vendor, func(t *testing.T) {
+			s, mock := setup(t)
+			s.Providers.Register(vendor, fixtureProviderFor(vendor, s.Store))
+			if err := mock.SetKV("ConsulManager/fixtures/"+vendor+"/main", fixture()); err != nil {
+				t.Fatal(err)
+			}
+			s.Store = &failingStore{Store: s.Store, fail: true}
+			if err := s.ECS(context.Background(), vendor, "main", "cn-hangzhou", false); err == nil {
+				t.Fatal("expected partial write failure")
+			}
+			if err := s.ECS(context.Background(), vendor, "main", "cn-hangzhou", false); err != nil {
+				t.Fatal(err)
+			}
+			services, err := s.Store.Services(context.Background(), `Service == "`+vendor+`_main_ecs" and "cn-hangzhou" in Tags and Meta.account == "main"`)
+			if err != nil || len(services) != 1 {
+				t.Fatalf("services=%v err=%v", services, err)
+			}
+		})
+	}
+}
+
+type capturingStore struct {
+	store.Store
+	registrations map[string]store.ServiceRegistration
+}
+
+func (s *capturingStore) Register(ctx context.Context, registration store.ServiceRegistration) error {
+	s.registrations[registration.ID] = registration
+	return s.Store.Register(ctx, registration)
+}
+
+func TestPhaseTwoFixturesClassifyAllFailureModes(t *testing.T) {
+	for _, vendor := range []string{"tencent_cloud", "huaweicloud", "awscloud"} {
+		for _, failure := range []string{"auth", "rate_limit", "temporary", "http_503", "timeout"} {
+			t.Run(vendor+"/"+failure, func(t *testing.T) {
+				s, mock := setup(t)
+				provider := &countingProvider{Provider: fixtureProviderFor(vendor, s.Store)}
+				s.Providers.Register(vendor, provider)
+				if err := mock.SetKV("ConsulManager/fixtures/"+vendor+"/main", map[string]any{"error": failure}); err != nil {
+					t.Fatal(err)
+				}
+				err := s.ECS(context.Background(), vendor, "main", "cn-hangzhou", false)
+				if err == nil {
+					t.Fatal("expected provider error")
+				}
+				wantCalls := 3
+				if failure == "auth" {
+					wantCalls = 1
+				}
+				if provider.calls != wantCalls {
+					t.Fatalf("calls=%d, want %d", provider.calls, wantCalls)
+				}
+				raw, ok := mock.GetKV(recordPath(vendor, "main", "ecs", "cn-hangzhou"))
+				if !ok {
+					t.Fatal("missing failure record")
+				}
+				var record map[string]any
+				if json.Unmarshal(raw, &record) != nil || record["status"] != float64(50000) {
+					t.Fatalf("record=%s", raw)
+				}
+			})
+		}
+	}
+}
+
+type countingProvider struct {
+	cloud.Provider
+	calls int
+}
+
+func (p *countingProvider) ECS(ctx context.Context, account, region string, externalIP bool) (map[string]model.ECS, error) {
+	p.calls++
+	return p.Provider.ECS(ctx, account, region, externalIP)
+}
+
+func fixtureProviderFor(vendor string, st store.Store) cloud.Provider {
+	switch vendor {
+	case "tencent_cloud":
+		return tencentcloud.NewFixtureProvider(st)
+	case "huaweicloud":
+		return huaweicloud.NewFixtureProvider(st)
+	case "awscloud":
+		return awscloud.NewFixtureProvider(st)
+	default:
+		return alicloud.FixtureProvider{Store: st}
 	}
 }
 
