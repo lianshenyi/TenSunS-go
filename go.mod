@@ -20,6 +20,11 @@ require (
 	github.com/json-iterator/go v1.1.10 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421 // indirect
 	github.com/modern-go/reflect2 v1.0.1 // indirect
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/cdb v1.3.197 // indirect
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.198 // indirect
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/cvm v1.3.183 // indirect
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/dcdb v1.3.169 // indirect
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/redis v1.3.194 // indirect
 	github.com/tjfoc/gmsm v1.3.2 // indirect
 	golang.org/x/net v0.0.0-20200506145744-7e3656a0809f // indirect
 	gopkg.in/ini.v1 v1.56.0 // indirect

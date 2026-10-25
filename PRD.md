@@ -1,4 +1,4 @@
-# 新增云账户的资源组同步（B：阿里云资源组只读）
+# 云账户资源组与资源任务同步（C：多云只读执行）
 
 ## 背景
 
@@ -9,19 +9,21 @@ Go 后端的新增云账户接口当前返回“尚未实现”，因为创建�
 - 提供可注入的云 Provider 注册表，供资源组同步调用。
 - 创建账户时先同步资源组；仅成功后才保存 group 与所选资源任务并加入调度器。
 - 以与既有 Consul 数据兼容的 KV 路径保存加密 AK/SK、资源组、执行记录和任务定义。
-- 使用阿里云官方 Resource Manager Go SDK 的 `ListResourceGroups` 只读 API，同步阿里云资源组；请求固定第一页、`page_size=100`。
-- 覆盖资源组同步、凭据/API 失败和 HTTP 创建流程测试。
+- 保持阿里云仅有 Resource Manager `ListResourceGroups` 的资源组只读边界；阿里云 ECS/RDS/Redis 任务明确仍不支持。
+- 接入腾讯云、华为云、AWS 的只读资源组与 ECS/RDS/Redis 查询，并将归一化结果注册到既有 Consul Service/record 契约。
+- 让既有调度器实际执行 `group`、`ecs`、`rds`、`redis` 任务；任何单个任务失败必须写脱敏失败 record，不能使调度器退出。
+- 覆盖资源组同步、任务同步、凭据/API 失败、调度和 HTTP 创建流程测试。
 
 ## 非目标
 
-- 不调用阿里云的任何写 API；不实现 ECS、RDS、Redis 或其他云厂商 API。
-- 不实现 ECS、RDS、Redis 的同步/服务注册，也不实现账户编辑、JumpServer 同步。
+- 不调用任何云厂商写 API；不在日志、HTTP 响应、Consul record 或测试输出中出现 AK/SK。
+- 不实现阿里云 ECS、RDS、Redis；不实现账户编辑、JumpServer 同步、云端删除或变更。
 - 不改变既有读接口或任务 KV 的字段格式。
 
 ## 用户与成功标准
 
-运维人员可经现有 `POST /api/jobs` 的 `dialogStatus=create` 协议创建阿里云账户。进程在内存中从既有加密 KV 解密 AK/SK 并调用只读 API；成功时接口返回 `20000`，且 group/资源任务、加密凭据和资源组 KV 均可读取；凭据或 API 失败时返回 `50000`，且不创建任务 KV。
+运维人员可经现有 `POST /api/jobs` 的 `dialogStatus=create` 协议创建受支持的云账户。进程在内存中从既有加密 KV 解密 AK/SK 并调用只读 API；资源组成功时接口返回 `20000`，且 group/资源任务、加密凭据和资源组 KV 均可读取；凭据或 API 失败时返回 `50000`，且不创建任务 KV。后续资源任务成功时更新对应 Consul Service 与 record；失败时仅更新该任务的脱敏失败 record。
 
 ## 风险
 
-仅 `alicloud` Provider 已注册；其他云厂商仍会明确失败。凭据只能以现有 AES 密文写入 Consul，且不得出现在日志、响应、测试输出或运行记录中。
+腾讯云、华为云和 AWS SDK 仅配置只读查询权限；分页上限遵循旧实现。厂商 SDK 错误必须转换为厂商/操作级的固定脱敏文本。AWS 无资源组概念，固定映射 `{"1":"1"}`，不需要云 API 请求。
