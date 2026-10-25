@@ -1,0 +1,114 @@
+# TenSunS-go — one-command stack: Consul + Go API + Vue/Nginx frontend.
+#
+#   cp .env.example .env && edit .env
+#   docker compose up -d --build
+#
+# The stack is self-contained: Consul runs in server mode with ACLs enabled and
+# a management token generated from .env, the Go API talks to it over the
+# compose network, and the Nginx frontend proxies /api/ to the API container.
+#
+# Notes:
+# - Secrets live in .env (git-ignored). Never commit real values.
+# - `consul_token` must equal `consul_management_token`; the default_policy is
+#   "deny", so a mismatch makes the API fail its startup connectivity check.
+# - The frontend proxy target is `tensuns-go-api:2026`, matching
+#   vue-consul/http-ops.conf, so the API service carries that name on the
+#   compose network.
+
+name: tensuns-go
+
+services:
+  consul:
+    image: hashicorp/consul:1.19.2
+    container_name: tensuns-go-consul
+    hostname: consul
+    restart: unless-stopped
+    command: ["/bin/sh", "/consul/init.sh"]
+    environment:
+      CONSUL_MANAGEMENT_TOKEN: "${consul_management_token:?set consul_management_token in .env}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    volumes:
+      - consul-data:/consul/data
+      - ./deploy/consul/init.sh:/consul/init.sh:ro
+    ports:
+      # Bound to loopback by default: Consul's HTTP API is not meant to be
+      # exposed publicly. Override with CONSUL_HTTP_BIND in .env.
+      - "${consul_http_bind:-127.0.0.1}:${consul_http_port:-18500}:8500"
+    networks:
+      - tensuns
+    healthcheck:
+      # With ACLs enabled the agent API requires a token, so the management
+      # token is passed explicitly.
+      test: ["CMD-SHELL", "CONSUL_HTTP_TOKEN=$${CONSUL_MANAGEMENT_TOKEN} consul members >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: "${version:-dev}"
+        COMMIT: "${commit:-unknown}"
+        BUILD_DATE: "${build_date:-unknown}"
+    image: tensuns-go:${image_tag:-latest}
+    container_name: tensuns-go-api
+    hostname: tensuns-go-api
+    restart: unless-stopped
+    depends_on:
+      consul:
+        condition: service_healthy
+    environment:
+      consul_url: "http://consul:8500/v1"
+      consul_token: "${consul_token:?set consul_token in .env}"
+      admin_passwd: "${admin_passwd:?set admin_passwd in .env}"
+      port: "2026"
+      log_level: "${log_level:-INFO}"
+      scheduler_disabled: "${scheduler_disabled:-1}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    ports:
+      - "${api_http_bind:-0.0.0.0}:${api_http_port:-2026}:2026"
+    networks:
+      tensuns:
+        aliases:
+          - tensuns-go-api
+    healthcheck:
+      # The API answers HTTP 200 with a business code in the body, so a plain
+      # GET on the unauthenticated login route is enough to prove liveness.
+      test: ["CMD-SHELL", "wget -qO- --post-data='{}' http://127.0.0.1:2026/api/user/login >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  web:
+    build:
+      context: ./vue-consul
+      dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: "${node_image:-node:14-alpine}"
+        NGINX_IMAGE: "${nginx_image:-nginx:1.24-alpine}"
+    image: tensuns-go-web:${image_tag:-latest}
+    container_name: tensuns-go-web
+    hostname: tensuns-go-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+    ports:
+      - "${web_http_bind:-0.0.0.0}:${web_http_port:-1026}:1026"
+    networks:
+      - tensuns
+
+volumes:
+  consul-data:
+    name: tensuns-go-consul-data
+
+networks:
+  tensuns:
+    name: tensuns-go-net
+    driver: bridge

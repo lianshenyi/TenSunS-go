@@ -42,6 +42,9 @@ pnpm-debug.log*
 skey
 bak-skey*
 
+# Docker compose runtime data
+/consul-data/
+
 # Logs and temporary files
 *.log
 tmp/
