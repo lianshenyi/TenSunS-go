@@ -21,23 +21,25 @@ Run `make smoke` from the repository root for the integrated compatibility check
 
 - `CONSUL_ADDR=127.0.0.1:8500`
 - `TENSUNS_API=http://127.0.0.1:2026` (optional Vue dev proxy override)
-- `scheduler_disabled=1` (recommended while cloud adapters are unavailable)
+- `scheduler_disabled=1` (set to `0` only after cloud credentials and read permissions are verified)
 
 Use a local Consul only. Do not put cloud credentials, JumpServer tokens, or production passwords in source control.
 
-## Cloud-account creation (Alibaba Cloud resource-group-only boundary)
+## Cloud-account creation and read-only synchronization
 
 `POST /api/jobs` accepts the existing `job_dict.dialogStatus=create` form. The request stores `ak` and `sk` encrypted at `ConsulManager/assets/{vendor}/aksk/{account}`, synchronizes resource groups first, then creates compatible group/ECS/RDS/Redis task KVs.
 
-The production binary registers the `alicloud` Provider only. It uses the official Alibaba Cloud Resource Manager SDK to call read-only `ListResourceGroups` (first page, 100 items) after credentials have been stored as ciphertext. AK/SK are decrypted only in process memory for that call and must never be copied into logs, responses, tests, or shell history. No Alibaba Cloud write API is called.
+The production binary registers `alicloud`, `tencent_cloud`, `huaweicloud`, and `awscloud`. AK/SK are decrypted only in process memory for an SDK client and must never be copied into logs, responses, tests, or shell history. No cloud write API is called.
 
-Other cloud vendors remain unregistered and return business code `50000`. Credential or Alibaba API failures also return `50000`; their group failure record is written, but no task KV is created. Unit and HTTP flow tests run with:
+The allowed calls are Alibaba Resource Manager `ListResourceGroups`; Tencent DCDB/CVM/CDB/Redis `Describe*`; Huawei EPS/ECS/RDS/DCS `List*`; and AWS EC2/RDS/ElastiCache `Describe*`. AWS has no resource-group API and uses its legacy fixed group `1`. Alibaba ECS/RDS/Redis remain unsupported and intentionally write a per-task failure record.
+
+Credential or cloud API failures return `50000`; their group failure record is written, but no task KV is created. A resource-job failure writes only its own failure record and does not stop other scheduled jobs. Unit and HTTP flow tests run with:
 
 ```bash
-go test ./internal/cloud/alicloud ./internal/sync ./internal/accounts ./internal/httpapi
+go test ./internal/cloud/... ./internal/sync ./internal/accounts ./internal/httpapi ./internal/scheduler
 ```
 
-For local development keep `scheduler_disabled=1` unless execution adapters are deliberately being tested. Resource-group sync is the only cloud operation implemented by this change; ECS, RDS, and Redis task execution remains unavailable.
+For local development keep `scheduler_disabled=1` unless execution adapters are deliberately being tested. Before enabling it in a shared environment, give the cloud account read-only permissions for the listed APIs and submit credentials only through the application UI.
 
 ## Test data and verification
 

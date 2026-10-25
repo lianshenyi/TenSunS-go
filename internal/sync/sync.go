@@ -121,7 +121,9 @@ func (c *Cloud) recordGroupFailure(ctx context.Context, vendor, account string, 
 		"status": 50000,
 		"count":  0,
 		"update": c.now().Format("01.02/15:04"),
-		"msg":    cause.Error(),
+		// Records are user-visible, while provider errors can include request
+		// details. Store a stable, credential-safe description instead.
+		"msg": "资源组同步失败",
 	}); err != nil {
 		return fmt.Errorf("record resource group failure: %w", err)
 	}
@@ -147,7 +149,7 @@ func (c *Cloud) writeECS(ctx context.Context, vendor, account, region string, re
 		if err != nil {
 			return 0, 0, err
 		}
-		meta := baseMeta(vendor, account, region, id, resource.Name, resource.Group, ip, port, status)
+		meta := baseMeta(vendor, account, region, id, resource.Name, c.displayGroup(ctx, vendor, account, resource.Group), ip, port, status)
 		meta["os"] = resource.OSType
 		meta["cpu"] = resource.CPU
 		meta["mem"] = resource.Mem
@@ -183,7 +185,7 @@ func (c *Cloud) writeRDS(ctx context.Context, vendor, account, region string, re
 		if err != nil {
 			return 0, 0, err
 		}
-		meta := baseMeta(vendor, account, region, id, resource.Name, resource.Group, ip, port, status)
+		meta := baseMeta(vendor, account, region, id, resource.Name, c.displayGroup(ctx, vendor, account, resource.Group), ip, port, status)
 		meta["itype"], meta["ver"], meta["domain"] = resource.IType, resource.Ver, resource.Domain
 		meta["disk"], meta["cpu"], meta["mem"], meta["exp"] = resource.Disk, resource.CPU, resource.Mem, resource.Exp
 		meta["team"] = resource.Team
@@ -213,13 +215,27 @@ func (c *Cloud) writeRedis(ctx context.Context, vendor, account, region string, 
 		if err != nil {
 			return 0, 0, err
 		}
-		meta := baseMeta(vendor, account, region, id, resource.Name, resource.Group, ip, port, status)
+		meta := baseMeta(vendor, account, region, id, resource.Name, c.displayGroup(ctx, vendor, account, resource.Group), ip, port, status)
 		meta["itype"], meta["ver"], meta["ip"], meta["mem"], meta["exp"] = resource.IType, resource.Ver, resource.IP, resource.Mem, resource.Exp
 		if err := c.store.Register(ctx, serviceRegistration(id, vendor, account, "redis", ip, port, []string{tagForStatus(status), resource.IType, resource.Ver, region}, meta)); err != nil {
 			return 0, 0, fmt.Errorf("register Redis %s: %w", id, err)
 		}
 	}
 	return on, off, nil
+}
+
+// displayGroup preserves the legacy Service metadata contract, which stores a
+// human-readable group name even though cloud APIs return an opaque group ID.
+func (c *Cloud) displayGroup(ctx context.Context, vendor, account, group string) string {
+	if group == "" || group == "无" {
+		return group
+	}
+	var groups map[string]string
+	found, err := c.store.GetValue(ctx, groupPath(vendor, account), &groups)
+	if err == nil && found && groups[group] != "" {
+		return groups[group]
+	}
+	return group
 }
 
 func (c *Cloud) removeStale(ctx context.Context, vendor, account, region, resourceType string, current any) error {
@@ -276,7 +292,7 @@ func (c *Cloud) recordResourceSuccess(ctx context.Context, vendor, account, reso
 }
 
 func (c *Cloud) recordResourceFailure(ctx context.Context, vendor, account, resourceType, region string, cause error) error {
-	if err := c.store.PutKV(ctx, resourceRecordPath(vendor, account, resourceType, region), map[string]any{"status": 50000, "count": "无", "on": 0, "off": 0, "update": "失败", "msg": cause.Error()}); err != nil {
+	if err := c.store.PutKV(ctx, resourceRecordPath(vendor, account, resourceType, region), map[string]any{"status": 50000, "count": "无", "on": 0, "off": 0, "update": "失败", "msg": resourceType + "同步失败"}); err != nil {
 		return fmt.Errorf("record %s failure: %w", resourceType, err)
 	}
 	return cause

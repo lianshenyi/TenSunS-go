@@ -66,6 +66,10 @@ func TestCloudGroupFailureWritesFailureRecord(t *testing.T) {
 	if _, found := mock.GetKV("ConsulManager/assets/fake/group/demo"); found {
 		t.Fatal("groups persisted after provider failure")
 	}
+	var record map[string]any
+	if found, err := st.GetValue(context.Background(), "ConsulManager/record/jobs/fake/demo/group", &record); err != nil || !found || record["msg"] != "资源组同步失败" {
+		t.Fatalf("record found=%v err=%v value=%v", found, err, record)
+	}
 }
 
 func TestCloudECSSyncReplacesStaleServiceAndWritesRecord(t *testing.T) {
@@ -73,10 +77,13 @@ func TestCloudECSSyncReplacesStaleServiceAndWritesRecord(t *testing.T) {
 	server := httptest.NewServer(mock.Handler())
 	t.Cleanup(server.Close)
 	st := consul.New(server.URL+"/v1", "", server.Client())
+	if err := st.PutKV(context.Background(), "ConsulManager/assets/fake/group/demo", map[string]string{"g-1": "platform"}); err != nil {
+		t.Fatal(err)
+	}
 	mock.SetService("gone", "fake_demo_ecs", "10.0.0.9", 9100, []string{"ON", "linux", "r1"}, map[string]string{"account": "demo"})
 	registry := cloud.NewRegistry()
 	registry.Register("fake", fakeProvider{ecs: map[string]model.ECS{
-		"i-1": {Name: "web", Group: "platform", OSType: "linux", Status: "Running", Region: "r1", IP: "10.0.0.1", CPU: "2核", Mem: "4GB", Exp: "按量", Tags: map[string]string{"team": "ops", "bad-key": "no"}},
+		"i-1": {Name: "web", Group: "g-1", OSType: "linux", Status: "Running", Region: "r1", IP: "10.0.0.1", CPU: "2核", Mem: "4GB", Exp: "按量", Tags: map[string]string{"team": "ops", "bad-key": "no"}},
 	}})
 
 	if err := NewCloud(registry, st).ECS(context.Background(), "fake", "demo", "r1", false); err != nil {
@@ -90,7 +97,7 @@ func TestCloudECSSyncReplacesStaleServiceAndWritesRecord(t *testing.T) {
 		t.Fatal("stale service was not removed")
 	}
 	service, ok := services["i-1"]
-	if !ok || service.Meta["instance"] != "10.0.0.1:9100" || service.Meta["team"] != "ops" || service.Meta["bad-key"] != "" {
+	if !ok || service.Meta["instance"] != "10.0.0.1:9100" || service.Meta["group"] != "platform" || service.Meta["team"] != "ops" || service.Meta["bad-key"] != "" {
 		t.Fatalf("service=%+v", service)
 	}
 	var record map[string]any
@@ -113,5 +120,8 @@ func TestCloudECSFailureWritesFailureRecord(t *testing.T) {
 	var record map[string]any
 	if found, err := st.GetValue(context.Background(), "ConsulManager/record/jobs/fake/demo/ecs/r1", &record); err != nil || !found || record["status"] != float64(50000) {
 		t.Fatalf("record found=%v err=%v value=%v", found, err, record)
+	}
+	if record["msg"] != "ecs同步失败" {
+		t.Fatalf("failure record leaked provider error: %v", record)
 	}
 }

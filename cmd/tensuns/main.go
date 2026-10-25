@@ -21,6 +21,9 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud/alicloud"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/aws"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/huawei"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/tencent"
 	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/httpapi"
@@ -72,6 +75,9 @@ func main() {
 
 	providers := cloud.NewRegistry()
 	providers.Register("alicloud", alicloud.New(st, cipher))
+	providers.Register("tencent_cloud", tencent.New(st, cipher))
+	providers.Register("huaweicloud", huawei.New(st, cipher))
+	providers.Register("awscloud", aws.New(st, cipher))
 	logCloudCapabilities(logger, providers)
 	cloudSync := syncservice.NewCloud(providers, st)
 	runtime := &jobs.Runtime{Cloud: cloudSync}
@@ -127,7 +133,7 @@ func main() {
 // resource-group providers are unavailable.
 func logCloudCapabilities(logger *slog.Logger, providers *cloud.Registry) {
 	logger.Info("resource group providers registered", "providers", providers.Vendors())
-	logger.Warn("cloud ECS, RDS, and Redis task execution is not implemented; scheduled tasks of those kinds will fail")
+	logger.Warn("Alibaba Cloud ECS, RDS, and Redis task execution is not implemented; those scheduled tasks will fail")
 }
 
 func newLogger(level string) *slog.Logger {

@@ -41,6 +41,7 @@ func New(st store.Store, cipher *cryptox.Cipher) *Provider {
 	return &Provider{load: credentialLoader{store: st, cipher: cipher}.load, newClients: sdkClients}
 }
 
+// Group lists Tencent Cloud projects through DCDB.
 func (p *Provider) Group(ctx context.Context, account string) (map[string]string, error) {
 	cs, err := p.clients(ctx, account)
 	if err != nil {
@@ -63,6 +64,7 @@ func (p *Provider) Group(ctx context.Context, account string) (map[string]string
 	return groups, nil
 }
 
+// ECS lists Tencent Cloud VM instances through CVM.
 func (p *Provider) ECS(ctx context.Context, account, region string, externalIP bool) (map[string]model.ECS, error) {
 	cs, err := p.clients(ctx, account)
 	if err != nil {
@@ -101,6 +103,7 @@ func (p *Provider) ECS(ctx context.Context, account, region string, externalIP b
 	return resources, nil
 }
 
+// RDS lists Tencent Cloud MySQL instances through CDB.
 func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]model.RDS, error) {
 	cs, err := p.clients(ctx, account)
 	if err != nil {
@@ -129,6 +132,7 @@ func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]
 	return resources, nil
 }
 
+// Redis lists Tencent Cloud cache instances through Redis.
 func (p *Provider) Redis(ctx context.Context, account, region string) (map[string]model.Redis, error) {
 	cs, err := p.clients(ctx, account)
 	if err != nil {

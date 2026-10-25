@@ -4,6 +4,7 @@ package aws
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	aws "github.com/aws/aws-sdk-go-v2/aws"
@@ -29,15 +30,18 @@ type Provider struct {
 	load func(context.Context, string) (credentialsValue, error)
 }
 
+// New creates an AWS provider backed by encrypted Consul credentials.
 func New(st store.Store, cipher *cryptox.Cipher) *Provider {
 	return &Provider{load: credentialLoader{store: st, cipher: cipher}.load}
 }
 
 // Group returns the legacy default group: AWS has no matching group API.
+// Group returns AWS's legacy fixed group without a cloud API request.
 func (p *Provider) Group(context.Context, string) (map[string]string, error) {
 	return map[string]string{"1": "1"}, nil
 }
 
+// ECS lists EC2 instances using a Describe-only call.
 func (p *Provider) ECS(ctx context.Context, account, region string, externalIP bool) (map[string]model.ECS, error) {
 	cfg, err := p.config(ctx, account, region)
 	if err != nil {
@@ -57,12 +61,13 @@ func (p *Provider) ECS(ctx context.Context, account, region string, externalIP b
 			if externalIP && instance.PublicIpAddress != nil {
 				ip = *instance.PublicIpAddress
 			}
-			result[*instance.InstanceId] = model.ECS{Name: tagValue(instance.Tags, "Name"), Group: "1", OSType: osType(stringValue(instance.PlatformDetails)), Status: string(instance.State.Name), Region: region, IP: ip, CPU: string(instance.InstanceType), Mem: "", Exp: "按量", Tags: tags(instance.Tags)}
+			result[*instance.InstanceId] = model.ECS{Name: tagValue(instance.Tags, "Name"), Group: "无", OSType: osType(stringValue(instance.PlatformDetails)), Status: string(instance.State.Name), Region: region, IP: ip, CPU: cpuCount(instance.CpuOptions), Mem: "", Exp: "按量", Tags: tags(instance.Tags)}
 		}
 	}
 	return result, nil
 }
 
+// RDS lists MySQL RDS instances using a Describe-only call.
 func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]model.RDS, error) {
 	cfg, err := p.config(ctx, account, region)
 	if err != nil {
@@ -81,11 +86,12 @@ func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]
 		if instance.Endpoint != nil {
 			host, port = stringValue(instance.Endpoint.Address), intValue(instance.Endpoint.Port)
 		}
-		result[*instance.DBInstanceIdentifier] = model.RDS{Name: *instance.DBInstanceIdentifier, Domain: host, IP: host, Port: port, Region: region, Group: "1", Status: stringValue(instance.DBInstanceStatus), IType: stringValue(instance.DBInstanceClass), Ver: stringValue(instance.EngineVersion), Exp: "按量"}
+		result[*instance.DBInstanceIdentifier] = model.RDS{Name: *instance.DBInstanceIdentifier, Domain: host, IP: host, Port: port, Region: region, Group: stringValue(instance.DBClusterIdentifier), Status: stringValue(instance.DBInstanceStatus), IType: stringValue(instance.Engine), Ver: stringValue(instance.EngineVersion), CPU: "0", Mem: "0", Disk: "0", Exp: "按量"}
 	}
 	return result, nil
 }
 
+// Redis lists ElastiCache clusters using a Describe-only call.
 func (p *Provider) Redis(ctx context.Context, account, region string) (map[string]model.Redis, error) {
 	cfg, err := p.config(ctx, account, region)
 	if err != nil {
@@ -104,18 +110,21 @@ func (p *Provider) Redis(ctx context.Context, account, region string) (map[strin
 		if len(cluster.CacheNodes) > 0 && cluster.CacheNodes[0].Endpoint != nil {
 			host, port = stringValue(cluster.CacheNodes[0].Endpoint.Address), intValue(cluster.CacheNodes[0].Endpoint.Port)
 		}
-		result[*cluster.CacheClusterId] = model.Redis{Name: *cluster.CacheClusterId, Domain: host, IP: host, Port: port, Region: region, Group: "1", Status: stringValue(cluster.CacheClusterStatus), IType: stringValue(cluster.CacheNodeType), Ver: stringValue(cluster.Engine), Exp: "按量"}
+		if port == 0 {
+			port = 6379
+		}
+		result[*cluster.CacheClusterId] = model.Redis{Name: *cluster.CacheClusterId, Domain: host, IP: host, Port: port, Region: region, Group: stringValue(cluster.ReplicationGroupId), Status: stringValue(cluster.CacheClusterStatus), IType: stringValue(cluster.CacheNodeType), Ver: stringValue(cluster.Engine), Mem: "0", Exp: "按量"}
 	}
 	return result, nil
 }
 
 func (p *Provider) config(ctx context.Context, account, region string) (aws.Config, error) {
+	if err := ctx.Err(); err != nil {
+		return aws.Config{}, err
+	}
 	c, err := p.load(ctx, account)
 	if err != nil {
 		return aws.Config{}, fmt.Errorf("load AWS credentials: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return aws.Config{}, err
 	}
 	return awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region), awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(c.accessKey, c.secretKey, "")))
 }
@@ -159,6 +168,18 @@ func intValue(v *int32) int {
 		return 0
 	}
 	return int(*v)
+}
+func int32Value(v *int32) int32 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+func cpuCount(value *ec2types.CpuOptions) string {
+	if value == nil {
+		return "0核"
+	}
+	return strconv.Itoa(int(int32Value(value.CoreCount)*int32Value(value.ThreadsPerCore))) + "核"
 }
 func boolPointer(v bool) *bool { return &v }
 func osType(value string) string {

@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -119,5 +120,38 @@ func TestRunNowRecoversPanic(t *testing.T) {
 	}
 	if err := s.RunNow(context.Background(), spec.ID); err == nil {
 		t.Fatal("expected panic to be converted to an error")
+	}
+}
+
+func TestConsecutiveFailuresAreIsolatedPerJob(t *testing.T) {
+	var failedCalls atomic.Int32
+	var healthyCalls atomic.Int32
+	s := New(ExecutorFunc(func(_ context.Context, spec JobSpec) error {
+		if spec.ID == "failing" {
+			failedCalls.Add(1)
+			return errors.New("provider unavailable")
+		}
+		healthyCalls.Add(1)
+		return nil
+	}), testLogger())
+	defer s.Close()
+	for _, spec := range []JobSpec{{ID: "failing", Func: "__main__:awscloud.ecs", Args: []any{"demo", "us-east-1", false}, Minutes: 10}, {ID: "healthy", Func: "__main__:awscloud.group", Args: []any{"demo"}, Minutes: 10}} {
+		if err := s.Upsert(context.Background(), spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if err := s.RunNow(context.Background(), "failing"); err == nil {
+			t.Fatal("failing job unexpectedly succeeded")
+		}
+	}
+	if err := s.RunNow(context.Background(), "healthy"); err != nil {
+		t.Fatal(err)
+	}
+	if failedCalls.Load() != 2 || healthyCalls.Load() != 1 {
+		t.Fatalf("failed=%d healthy=%d", failedCalls.Load(), healthyCalls.Load())
+	}
+	if _, ok := s.NextRun("healthy"); !ok {
+		t.Fatal("healthy job was removed after another job failed")
 	}
 }

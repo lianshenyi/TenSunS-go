@@ -130,7 +130,7 @@ func TestCredentialAndAPIFailuresDoNotCreateTasks(t *testing.T) {
 				if err != nil || !found {
 					t.Fatalf("failure record found=%v err=%v", found, err)
 				}
-				if record["msg"] != "load resource groups: Alibaba Cloud ListResourceGroups request failed" {
+				if record["msg"] != "资源组同步失败" {
 					t.Fatalf("failure record message = %#v", record["msg"])
 				}
 			}
