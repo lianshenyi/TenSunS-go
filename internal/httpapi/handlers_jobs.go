@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -212,28 +213,55 @@ func (s *Server) mutateJob(w http.ResponseWriter, r *http.Request) {
 			s.businessError(w, fmt.Errorf("invalid run job request"))
 			return
 		}
-		if err := s.jobs.RunNow(r.Context(), jobID); err != nil {
-			s.businessError(w, fmt.Errorf("run job %q: %w", jobID, err))
-			return
-		}
-
-		data := "同步成功！"
-		var record struct {
-			Update string `json:"update"`
-			Msg    string `json:"msg"`
-		}
-		found, err := s.store.GetValue(r.Context(), "ConsulManager/record/jobs/"+jobID, &record)
+		// The task is executed synchronously and the record is read only
+		// afterwards, so the response carries this run's record instead of the
+		// previous one.
+		runErr := s.jobs.RunNow(r.Context(), jobID)
+		record, found, err := s.readJobRecord(r.Context(), jobID)
 		if err != nil {
 			s.businessError(w, fmt.Errorf("read run job record %q: %w", jobID, err))
 			return
 		}
-		if found && record.Update != "" && record.Msg != "" {
-			data = record.Update + "：" + record.Msg
+		status, statusErr := intValue(record.Status)
+		if !found || statusErr != nil || record.Update == "" || record.Msg == "" {
+			// Without a usable record there is no "{update}：{msg}" contract
+			// to return; fall back to the generic redacted error.
+			s.businessError(w, runErr)
+			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": data})
+		if runErr != nil && status == 20000 {
+			// The run failed before it wrote its own record, so the stored
+			// record still describes an earlier successful run.
+			s.businessError(w, runErr)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"code": status,
+			"data": record.Update + "：" + record.Msg,
+		})
 	default:
 		s.businessError(w, fmt.Errorf("unknown dialogStatus %q", status))
 	}
+}
+
+// jobRecord is the subset of a task execution record used by the manual-run
+// contract. The sync layer writes fixed, credential-safe messages, so the
+// record can be returned to the client without further redaction.
+type jobRecord struct {
+	Status any    `json:"status"`
+	Update string `json:"update"`
+	Msg    string `json:"msg"`
+}
+
+// readJobRecord reads the execution record of a task. found is false when the
+// task has no record yet.
+func (s *Server) readJobRecord(ctx context.Context, jobID string) (jobRecord, bool, error) {
+	var record jobRecord
+	found, err := s.store.GetValue(ctx, "ConsulManager/record/jobs/"+jobID, &record)
+	if err != nil {
+		return jobRecord{}, false, err
+	}
+	return record, found, nil
 }
 
 func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {

@@ -41,7 +41,9 @@ go test ./internal/cloud/... ./internal/sync ./internal/accounts ./internal/http
 
 For local development keep `scheduler_disabled=1` unless execution adapters are deliberately being tested. Before enabling it in a shared environment, give the cloud account read-only permissions for the listed APIs and submit credentials only through the application UI.
 
-The authenticated “同步” button sends `POST /api/jobs` with `job_dict.dialogStatus=run` and a `jobid`. It runs the scheduled job synchronously. On success the API returns the task record's `update：msg`; missing jobs, invalid parameters, and provider failures retain the existing generic `50000` business response and do not expose provider details.
+The authenticated “同步” button sends `POST /api/jobs` with `job_dict.dialogStatus=run` and a `jobid`. It runs the scheduled job synchronously and reads the record only afterwards, so the response always describes the run that just finished. Both success and failure return the record's `status` as `code` and `"{update}：{msg}"` as `data`; the record messages are fixed, credential-safe strings written by the sync layer, so they can be returned as-is and never contain provider text. Only when the task has no record or the record cannot be read does the API fall back to the generic `50000` business response `请求处理失败，请查看后端日志！`. Missing jobs and invalid parameters produce the same generic redacted error, and provider errors are logged, never echoed to the client.
+
+The `run` contract is covered by `go test ./internal/httpapi -run TestJobRunContract`, which exercises the success, missing-task, invalid-parameter, provider-failure, and failure-record paths over the authenticated HTTP surface.
 
 ## Test data and verification
 

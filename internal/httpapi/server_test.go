@@ -452,4 +452,28 @@ func TestJobRunContract(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("failure record is returned", func(t *testing.T) {
+		f := newFixture(t)
+		f.server.jobs = jobSchedulerStub{runNow: func(_ context.Context, id string) error {
+			// The sync layer writes a fixed, credential-safe failure record
+			// before it reports the provider error.
+			if err := f.mock.SetKV("ConsulManager/record/jobs/"+id, map[string]any{
+				"status": 50000, "count": "无", "on": 0, "off": 0, "update": "失败", "msg": "ECS同步失败",
+			}); err != nil {
+				return err
+			}
+			return errors.New("provider rejected secret access-key")
+		}}
+		token := f.login(t)
+		_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+			"job_dict": map[string]any{"dialogStatus": "run", "jobid": "alicloud/main/ecs/cn-hangzhou"},
+		})
+		if body["code"].(float64) != 50000 || body["data"] != "失败：ECS同步失败" {
+			t.Fatalf("run failure response = %v", body)
+		}
+		if strings.Contains(body["data"].(string), "provider") || strings.Contains(body["data"].(string), "access-key") {
+			t.Fatalf("provider error leaked in response: %v", body)
+		}
+	})
 }
