@@ -59,16 +59,19 @@ make web-dev    # 启动 Vue 本地开发服务，/api 默认代理到 127.0.0.1
 Docker Compose 一键启动（Consul + Go 后端 + Vue 前端）：
 
 ```bash
-make env-init   # 从 .env.example 生成 .env（已存在则不覆盖）
+make env-init   # 生成 .env，随机生成 Token 与 admin 密码（已存在则不覆盖）
+make env-regen  # 重新生成 .env，覆盖已有文件
 make up         # docker compose up -d --build，然后打印 docker compose ps
 make ps         # 查看服务状态
 make logs       # 跟踪全部服务日志
 make down       # 停止并移除容器（保留数据卷）
 ```
 
-`make up` 之前需要先编辑 `.env`：至少修改 `consul_management_token`、`consul_token`、`admin_passwd`。
+`make env-init`（等价于 `./scripts/gen-env.sh`）从 `.env.example` 生成 `.env`，并**随机生成**：
+`consul_management_token`（UUID v4）、`consul_token`（与上者相同的 UUID）、`admin_passwd`（24 位随机十六进制），
+其余键沿用模板默认值，`.env` 权限设为 `600`。
 `consul_token` 必须与 `consul_management_token` 完全一致——Consul ACL 默认策略是 `deny`，
-不一致会让后端启动时的连通性检查直接失败。
+不一致会让后端启动时的连通性检查直接失败；脚本已保证两者相同。
 
 `make web-dev` 可通过 `TENSUNS_API` 覆盖后端地址，例如 `TENSUNS_API=http://10.0.10.236:2026 make web-dev`。
 

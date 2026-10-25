@@ -3,7 +3,7 @@
 COMPOSE ?= docker compose
 
 .PHONY: help test smoke build image web-image web-dev go-test go-smoke go-build go-image legacy-build \
-        up down restart logs ps env-init build-all
+        up down restart logs ps env-init env-regen build-all
 
 help:
 	@echo "TenSunS-go"
@@ -16,7 +16,8 @@ help:
 	@echo "  make legacy-build  构建旧 Flask 镜像（仅迁移参考）"
 	@echo ""
 	@echo "docker compose 一键启动（Consul + Go API + Vue 前端）"
-	@echo "  make env-init    从 .env.example 生成 .env（已存在则不覆盖）"
+	@echo "  make env-init    从 .env.example 生成 .env（随机生成 Token 与 admin 密码，已存在则不覆盖）"
+	@echo "  make env-regen   重新生成 .env（覆盖已有文件，随机生成 Token 与 admin 密码）"
 	@echo "  make up          docker compose up -d --build 一键构建并启动"
 	@echo "  make down        停止并移除容器（保留数据卷）"
 	@echo "  make restart     重启整套服务"
@@ -60,7 +61,10 @@ legacy-build:
 # --- docker compose -----------------------------------------------------------
 
 env-init:
-	@test -f .env && echo ".env 已存在，未覆盖" || { cp .env.example .env && echo "已生成 .env，请先编辑其中的 consul_management_token / consul_token / admin_passwd"; }
+	@test -f .env && echo ".env 已存在，未覆盖" || { ./scripts/gen-env.sh && echo "已生成 .env（随机 Token 与 admin 密码），可直接 docker compose up -d --build"; }
+
+env-regen:
+	./scripts/gen-env.sh --force
 
 build-all:
 	$(COMPOSE) build

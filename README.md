@@ -55,10 +55,29 @@
 一条命令即可从零启动：
 
 ```bash
-cp .env.example .env
-# 编辑 .env：至少要改 consul_management_token、consul_token、admin_passwd
-docker compose up -d --build
+make env-init   # 生成 .env，并随机生成 consul_management_token / consul_token / admin_passwd
+make up         # docker compose up -d --build
 ```
+
+`make env-init` 会复制 `.env.example` 为 `.env`，为下面三项**随机生成**安全值，
+并把 `.env` 权限设为 `600`：
+
+| 键 | 生成方式 |
+| --- | --- |
+| `consul_management_token` | 随机 UUID v4（Consul ACL 引导 Token） |
+| `consul_token` | 与 `consul_management_token` 相同的 UUID（两者必须一致） |
+| `admin_passwd` | 24 位随机十六进制串（内置 admin 账号登录密码） |
+
+其余键（端口、绑定地址、镜像名、日志级别等）沿用 `.env.example` 的默认值。
+
+想手动控制内容、或想重新摇一套随机值：
+
+```bash
+cp .env.example .env   # 手动编辑三项占位符
+make env-regen         # 重新随机生成并覆盖已有 .env
+```
+
+生成后的密码请自行留存——`.env` 不会写回仓库。
 
 也可以用 Makefile 快捷目标（`make up` 会先自动生成 `.env`）：
 
