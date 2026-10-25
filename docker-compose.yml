@@ -1,7 +1,10 @@
 # TenSunS-go — one-command stack: Consul + Go API + Vue/Nginx frontend.
 #
 #   ./scripts/gen-env.sh          # 1. generate .env (random tokens + admin password)
-#   docker compose up -d --build  # 2. build images and start the stack
+#   ./scripts/compose.sh up -d --build  # 2. build images and start the stack
+#
+# Use ./scripts/compose.sh (not a hardcoded `docker compose`) so the stack also
+# runs on hosts where only the legacy `docker-compose` binary is installed.
 #
 # The stack is self-contained: Consul runs in server mode with ACLs enabled and
 # a management token generated from .env, the Go API talks to it over the

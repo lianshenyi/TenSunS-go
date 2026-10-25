@@ -56,15 +56,33 @@
 
 ```bash
 ./scripts/gen-env.sh          # 1. 生成 .env（随机生成 consul_management_token / consul_token / admin_passwd）
-docker compose up -d --build  # 2. 构建镜像并后台启动全套服务
+./scripts/compose.sh up -d --build  # 2. 构建镜像并后台启动全套服务
 ```
 
 等价的 Makefile 快捷目标（`make up` 会先自动生成 `.env`）：
 
 ```bash
 make env-init   # 等同于 ./scripts/gen-env.sh
-make up         # 等同于 docker compose up -d --build，并打印服务状态
+make up         # 等同于 ./scripts/compose.sh up -d --build，并打印服务状态
 ```
+
+> **如果 `docker compose` 报 `unknown shorthand flag: 'd' in -d`**
+>
+> 这不是本项目的编排文件有问题，而是**这台机器的 Docker 没装 Compose**：
+> `docker compose` 不是有效的子命令时，docker CLI 会把后面的 `-d` 当成自己的
+> 参数解析，于是打印出整份 `docker --help`。用上面的 `./scripts/compose.sh`
+> 即可，它会自动适配：`docker compose`（v2 插件）→ `docker-compose`（v1 二进制）；
+> 两者都没有时会直接给出安装命令：
+>
+> ```bash
+> # CentOS / RHEL / Rocky / Alma
+> sudo yum install -y docker-compose-plugin
+> # Debian / Ubuntu
+> sudo apt-get update && sudo apt-get install -y docker-compose-plugin
+> ```
+>
+> 想手动指定实现，也可以：`make up COMPOSE=docker-compose`，
+> 或直接用 `make compose ARGS="up -d --build"` 透传任意 compose 子命令。
 
 `./scripts/gen-env.sh` 会复制 `.env.example` 为 `.env`，为下面三项**随机生成**安全值，
 并把 `.env` 权限设为 `600`：
@@ -89,9 +107,9 @@ cp .env.example .env       # 手动编辑三项占位符
 其他常用命令：
 
 ```bash
-docker compose ps        # 查看服务状态（等价于 make ps）
-docker compose logs -f   # 跟踪日志（等价于 make logs）
-docker compose down      # 停止并移除容器，保留数据卷（等价于 make down）
+./scripts/compose.sh ps        # 查看服务状态（等价于 make ps）
+./scripts/compose.sh logs -f   # 跟踪日志（等价于 make logs）
+./scripts/compose.sh down      # 停止并移除容器，保留数据卷（等价于 make down）
 ```
 
 启动后：
@@ -110,8 +128,8 @@ docker compose down      # 停止并移除容器，保留数据卷（等价于 m
 - 前端 Nginx 通过 Docker DNS 动态解析 `tensuns-go-api:2026`（见 `vue-consul/http-ops.conf`），
   因此后端重建后前端无需重启；反之，**先启动后端再启动前端**。
 - 编排使用 `depends_on: service_healthy`，Consul 与后端都带健康检查，启动顺序自动保证。
-- Consul 数据保存在命名卷 `tensuns-go-consul-data` 中，`docker compose down` 不会删除；
-  需要完全重置时执行 `docker compose down -v`。
+- Consul 数据保存在命名卷 `tensuns-go-consul-data` 中，`compose down` 不会删除；
+  需要完全重置时执行 `./scripts/compose.sh down -v`。
 - 演示数据可另行灌入：`python3 scripts/seed_demo.py http://127.0.0.1:18500/v1 <consul_token>`。
 
 > ⚠️ 默认 `scheduler_disabled=1`，调度器不加载 Consul 任务。这是刻意为之：
@@ -166,7 +184,7 @@ Compose 编排另外使用 `.env` 里的这些键（见 `.env.example`）：`con
 cmd/tensuns/        Go 后端入口
 cmd/consulmock/     内存 Consul 测试服务
 internal/           Go 实现与测试
-scripts/            兼容性冒烟测试、演示数据灌入
+scripts/            兼容性冒烟测试、演示数据灌入、Compose 环境适配与 .env 生成
 vue-consul/         Vue 前端
 flask-consul/       Python 迁移参考实现
 deploy/consul/      Compose 用的 Consul 配置模板与 ACL 引导脚本

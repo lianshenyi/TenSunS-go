@@ -35,7 +35,7 @@
 cmd/tensuns/        Go 后端入口
 cmd/consulmock/     内存 Consul 测试服务
 internal/           配置、鉴权、加密、Consul、调度、HTTP API
-scripts/            冒烟测试、演示数据灌入
+scripts/            冒烟测试、演示数据灌入、Compose 环境适配与 .env 生成
 vue-consul/         Vue 2 前端
 flask-consul/       Python 迁移参考实现
 deploy/consul/      Compose 用的 Consul 配置模板与 ACL 引导脚本
@@ -61,11 +61,19 @@ Docker Compose 一键启动（Consul + Go 后端 + Vue 前端）：
 ```bash
 make env-init   # 生成 .env，随机生成 Token 与 admin 密码（已存在则不覆盖）
 make env-regen  # 重新生成 .env，覆盖已有文件
-make up         # docker compose up -d --build，然后打印 docker compose ps
+make up         # ./scripts/compose.sh up -d --build，然后打印 compose ps
 make ps         # 查看服务状态
 make logs       # 跟踪全部服务日志
 make down       # 停止并移除容器（保留数据卷）
 ```
+
+> **Compose 实现适配**：所有 compose 命令都经由 `./scripts/compose.sh` 转发，它按
+> `docker compose`（v2 CLI 插件）→ `docker-compose`（v1 二进制）的顺序探测，两者都没有时
+> 打印安装指引并以 127 退出。**不要在文档和 Makefile 里直接写死 `docker compose`**：
+> 部分服务器（如 `jumpserver`）的 Docker 未安装 compose 插件，执行 `docker compose up -d`
+> 会报 `unknown shorthand flag: 'd' in -d`（docker CLI 把 `compose` 当成未知命令，
+> 转而把 `-d` 当作自己的参数解析）。需要指定实现时用 `make up COMPOSE=docker-compose`，
+> 或用 `make compose ARGS="up -d --build"` 透传任意子命令。
 
 `make env-init`（等价于 `./scripts/gen-env.sh`）从 `.env.example` 生成 `.env`，并**随机生成**：
 `consul_management_token`（UUID v4）、`consul_token`（与上者相同的 UUID）、`admin_passwd`（24 位随机十六进制），
@@ -199,6 +207,11 @@ python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
   正确写法：`curl -H "X-Consul-Token: $consul_token" http://127.0.0.1:18500/v1/kv/?keys`。
 - 冒烟脚本 `scripts/smoke.py` 会硬断言 `nextime` 是时间格式，调度器关闭时值为 `无`，
   因此**必须在启用调度器的前提下跑冒烟**。
+- `docker compose up -d --build` 报 `unknown shorthand flag: 'd' in -d` 并打印整份 `docker --help`，
+  原因是**该机器的 Docker 没装 Compose CLI 插件**（`docker compose` 不是有效子命令，
+  docker CLI 便把 `-d` 当成自己的参数解析）。与 `docker-compose.yml` 无关。
+  修复：`yum install -y docker-compose-plugin`（或 `apt-get install -y docker-compose-plugin`）；
+  仓库侧已提供 `./scripts/compose.sh` 自动适配 v2 插件 / v1 二进制，Makefile 目标均走该包装脚本。
 
 后续可做（本次未执行）：
 
