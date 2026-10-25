@@ -1,4 +1,4 @@
-# 新增云账户的资源组同步（A 范围）
+# 新增云账户的资源组同步（B：阿里云资源组只读）
 
 ## 背景
 
@@ -9,18 +9,19 @@ Go 后端的新增云账户接口当前返回“尚未实现”，因为创建�
 - 提供可注入的云 Provider 注册表，供资源组同步调用。
 - 创建账户时先同步资源组；仅成功后才保存 group 与所选资源任务并加入调度器。
 - 以与既有 Consul 数据兼容的 KV 路径保存加密 AK/SK、资源组、执行记录和任务定义。
-- 通过 fake provider 覆盖资源组同步单元测试和 HTTP 创建流程测试。
+- 使用阿里云官方 Resource Manager Go SDK 的 `ListResourceGroups` 只读 API，同步阿里云资源组；请求固定第一页、`page_size=100`。
+- 覆盖资源组同步、凭据/API 失败和 HTTP 创建流程测试。
 
 ## 非目标
 
-- 不调用真实云 API，不新增云厂商 SDK 或凭据联调。
+- 不调用阿里云的任何写 API；不实现 ECS、RDS、Redis 或其他云厂商 API。
 - 不实现 ECS、RDS、Redis 的同步/服务注册，也不实现账户编辑、JumpServer 同步。
 - 不改变既有读接口或任务 KV 的字段格式。
 
 ## 用户与成功标准
 
-运维人员可经现有 `POST /api/jobs` 的 `dialogStatus=create` 协议创建账户。资源组 fake provider 成功时，接口返回 `20000`，且 group/资源任务、加密凭据和资源组 KV 均可读取；provider 失败时返回 `50000`，且不创建任务 KV。
+运维人员可经现有 `POST /api/jobs` 的 `dialogStatus=create` 协议创建阿里云账户。进程在内存中从既有加密 KV 解密 AK/SK 并调用只读 API；成功时接口返回 `20000`，且 group/资源任务、加密凭据和资源组 KV 均可读取；凭据或 API 失败时返回 `50000`，且不创建任务 KV。
 
 ## 风险
 
-生产进程尚未注册真实 provider，因此创建请求会明确失败，直到后续云厂商适配器接入。凭据只能以现有 AES 密文写入 Consul，日志和响应中不得回显。
+仅 `alicloud` Provider 已注册；其他云厂商仍会明确失败。凭据只能以现有 AES 密文写入 Consul，且不得出现在日志、响应、测试输出或运行记录中。

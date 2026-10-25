@@ -16,3 +16,10 @@
 - [x] 使用 fake provider 补资源组单元测试、编排测试与 HTTP 流程测试。
 - [x] 运行 `go build ./...`、`go vet ./...`、`go test ./...`。
 - [x] 更新 RUNBOOK，说明当前无真实 provider 的运行限制。
+
+## Phase 3：阿里云资源组只读 Provider（方案 B）
+
+- [x] 确认方案 B 范围：仅阿里云 Resource Manager `ListResourceGroups` 只读 API。
+- [x] 引入阿里云官方 SDK，读取既有加密凭据并注册 `alicloud` Provider。
+- [x] 覆盖成功、凭据/API 失败及失败后无任务落库保护。
+- [x] 更新 PRD、规格与 RUNBOOK，说明只读 API 与其他厂商边界。

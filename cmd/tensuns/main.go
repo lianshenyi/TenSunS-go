@@ -20,6 +20,7 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/accounts"
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/alicloud"
 	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/httpapi"
@@ -70,6 +71,7 @@ func main() {
 	authSvc := auth.New(cfg.AdminPasswd, tokenSigner)
 
 	providers := cloud.NewRegistry()
+	providers.Register("alicloud", alicloud.New(st, cipher))
 	cloudSync := syncservice.NewCloud(providers, st)
 	runtime := &jobs.Runtime{Cloud: cloudSync}
 	sched := scheduler.New(runtime, logger)

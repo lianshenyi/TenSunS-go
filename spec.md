@@ -2,7 +2,7 @@
 
 ## 架构
 
-`httpapi` 将创建请求映射为 `accounts.Request` 并委托可注入的 `accounts.Creator`。Creator 加密并持久化 AK/SK，调用 `sync.Cloud.Group`；后者通过 `cloud.Registry` 取 Provider，写入：
+`httpapi` 将创建请求映射为 `accounts.Request` 并委托可注入的 `accounts.Creator`。Creator 加密并持久化 AK/SK，调用 `sync.Cloud.Group`；后者通过 `cloud.Registry` 取 Provider。生产入口注册 `alicloud` Provider：它从既有 KV 在内存中解密凭据，使用官方 `resourcemanager-20200331/v2` SDK 调用只读 `ListResourceGroups(PageSize=100)`，将 `Id -> DisplayName` 返回给同步层。同步层写入：
 
 - `ConsulManager/assets/{vendor}/group/{account}`：`map[groupID]groupName`
 - `ConsulManager/record/jobs/{vendor}/{account}/group`：`status`、`count`、`update`、`msg`
@@ -17,10 +17,11 @@
 
 ## 依赖与边界
 
-不增加第三方依赖。Provider 已有 `Group(context.Context, account) (map[string]string,error)` 契约；本期只消费该方法。生产入口构造空 Registry，因此没有真实适配器时不会伪造成功。
+增加阿里云官方 `github.com/alibabacloud-go/resourcemanager-20200331/v2` SDK。Provider 已有 `Group(context.Context, account) (map[string]string,error)` 契约；本期只消费该方法。只注册 `alicloud`，且不调用任何写云资源 API；其他 vendor 保持未注册失败。SDK 错误只作为带上下文的失败原因返回，AK/SK 不得被日志、响应或记录包装/输出。
 
 ## 测试
 
+- `internal/cloud/alicloud`：官方 SDK 调用参数、返回映射、凭据加载/API 错误。
 - `internal/sync`：fake registry provider 的成功与失败、KV/record 写入。
 - `internal/accounts`：成功时任务及调度 Upsert；失败时没有任务。
 - `internal/httpapi`：携带认证的 create 请求贯通 fake provider、加密凭据、KV 和任务调度。

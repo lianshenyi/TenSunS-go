@@ -25,14 +25,16 @@ Run `make smoke` from the repository root for the integrated compatibility check
 
 Use a local Consul only. Do not put cloud credentials, JumpServer tokens, or production passwords in source control.
 
-## Cloud-account creation (current migration boundary)
+## Cloud-account creation (Alibaba Cloud resource-group-only boundary)
 
 `POST /api/jobs` accepts the existing `job_dict.dialogStatus=create` form. The request stores `ak` and `sk` encrypted at `ConsulManager/assets/{vendor}/aksk/{account}`, synchronizes resource groups first, then creates compatible group/ECS/RDS/Redis task KVs.
 
-The production binary deliberately starts with an empty cloud provider registry: it does not call cloud APIs or include vendor SDKs. A create request therefore returns business code `50000` until a later deployment injects a real provider. Unit and HTTP flow tests inject a fake provider; run them with:
+The production binary registers the `alicloud` Provider only. It uses the official Alibaba Cloud Resource Manager SDK to call read-only `ListResourceGroups` (first page, 100 items) after credentials have been stored as ciphertext. AK/SK are decrypted only in process memory for that call and must never be copied into logs, responses, tests, or shell history. No Alibaba Cloud write API is called.
+
+Other cloud vendors remain unregistered and return business code `50000`. Credential or Alibaba API failures also return `50000`; their group failure record is written, but no task KV is created. Unit and HTTP flow tests run with:
 
 ```bash
-go test ./internal/sync ./internal/accounts ./internal/httpapi
+go test ./internal/cloud/alicloud ./internal/sync ./internal/accounts ./internal/httpapi
 ```
 
 For local development keep `scheduler_disabled=1` unless execution adapters are deliberately being tested. Resource-group sync is the only cloud operation implemented by this change; ECS, RDS, and Redis task execution remains unavailable.
