@@ -4,10 +4,11 @@ FROM golang:1.24-alpine AS build
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
+ARG GOPROXY=https://goproxy.cn,direct
 
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOPROXY=${GOPROXY} go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build \
