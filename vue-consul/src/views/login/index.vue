@@ -1,11 +1,11 @@
 <template>
   <div class="login-container">
-    <div class="title-container" style="text-align:center; padding: 160px 70px 0;">
-      <br><br>
-      <img :src="loginLogo" width="720" height="330">
-      <br><br>
-    </div>
-    <el-form ref="loginForm" :model="loginForm" :rules="loginRules" class="login-form" auto-complete="on" label-position="left" style="padding: 10px 100px 0;">
+    <main class="login-panel" aria-labelledby="login-title">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true">T</span>
+        <div><h1 id="login-title">TenSunS</h1><p>云资源同步控制台</p></div>
+      </div>
+    <el-form ref="loginForm" :model="loginForm" :rules="loginRules" class="login-form" auto-complete="on" label-position="left">
       <el-form-item prop="username">
         <span class="svg-container">
           <svg-icon icon-class="user" />
@@ -40,20 +40,14 @@
           <svg-icon :icon-class="passwordType === 'password' ? 'eye' : 'eye-open'" />
         </span>
       </el-form-item>
-      <el-button :loading="loading" type="primary" round class="login-button" @click.native.prevent="handleLogin">登 录</el-button>
+      <el-button :loading="loading" type="primary" class="login-button" @click.native.prevent="handleLogin">登录</el-button>
     </el-form>
-    <div align="center" class="title-container">
-      <span style="font-size:12px" class="title">{{ VER }}</span>
-    </div>
-    <div class="footer">
-      <p style="width:100%"><center><el-link href="https://StarsL.cn" :underline="false" target="_blank">Powered by StarsL.cn</el-link></center></p>
-    </div>
+      <p class="version">{{ VER }}</p>
+    </main>
   </div>
 </template>
 
 <script>
-import biglogo from '@/assets/login_images/tensuns.png'
-
 export default {
   name: 'Login',
   data() {
@@ -82,7 +76,6 @@ export default {
       },
       loading: false,
       passwordType: 'password',
-      loginLogo: biglogo,
       redirect: undefined
     }
   },
@@ -129,9 +122,9 @@ export default {
 /* 修复input 背景不协调 和光标变色 */
 /* Detail see https://github.com/PanJiaChen/vue-element-admin/pull/927 */
 
-$bg:#283443;
-$light_gray:#fff;
-$cursor: #fff;
+$bg:#f7fcfa;
+$light_gray:#16333a;
+$cursor: #16333a;
 
 @supports (-webkit-mask: none) and (not (cater-color: $cursor)) {
   .login-container .el-input input {
@@ -147,8 +140,8 @@ $cursor: #fff;
     width: 85%;
 
     input {
-      background: transparent;
-      border: 0px;
+      background: #f7fcfa;
+      border: 1px solid #b6cdc6;
       -webkit-appearance: none;
       border-radius: 0px;
       padding: 12px 5px 12px 15px;
@@ -164,17 +157,17 @@ $cursor: #fff;
   }
 
   .login-button {
-    width:60%;
+    width:100%;
     display: block;
     margin: 0 auto;
     margin-bottom:15px;
-    border: 0px solid rgba(255, 255, 255, 0);
-    background: rgba(0, 0, 0, 0.2);
+    border: 0;
+    background: #117a78;
   }
   .el-form-item {
-    border: 0px solid rgba(255, 255, 255, 0);
-    background: rgba(0, 0, 0, 0.1);
-    border-radius: 5px;
+    border: 0;
+    background: transparent;
+    border-radius: 0;
     color: #454545;
   }
   .el-form-item__content {
@@ -186,29 +179,40 @@ $cursor: #fff;
 </style>
 
 <style lang="scss" scoped>
-$bg:#2d3a4b;
-$dark_gray:#889aa4;
-$light_gray:#eee;
+$bg:#12303a;
+$dark_gray:#49716d;
+$light_gray:#f7fcfa;
 
 .login-container {
-  // min-height: 100%;
-  // width: 100%;
-  // background-color: $bg;
-  // overflow: hidden;
   width: 100%;
-  height: 100%;
-  background-image: url("../../assets/login_images/bg.png");
-  background-size: cover;
-  background-position: center;
-  position: relative;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  place-items: center;
+  padding: 24px;
+  background: radial-gradient(circle at 18% 20%, rgba(224, 164, 88, .2), transparent 29%), linear-gradient(135deg, #0c242d 0%, #123f47 57%, #176c68 100%);
+
+  .login-panel {
+    width: min(430px, 100%);
+    max-width: 100%;
+    min-width: 0;
+    justify-self: center;
+    padding: 40px;
+    box-sizing: border-box;
+    background: rgba(247, 252, 250, .97);
+    border: 1px solid rgba(255, 247, 231, .45);
+    border-top: 6px solid #e0a458;
+    box-shadow: 18px 18px 0 rgba(7, 27, 34, .22);
+  }
+
+  .brand-lockup { display: flex; align-items: center; gap: 14px; margin-bottom: 32px; }
+  .brand-lockup h1 { margin: 0; color: #12303a; font: 700 29px/1 Georgia, "Songti SC", serif; letter-spacing: .04em; }
+  .brand-lockup p { margin: 7px 0 0; color: #49716d; font-size: 13px; }
+  .brand-mark { display: grid; width: 48px; height: 48px; place-items: center; background: #12303a; color: #fff7e7; font: 700 24px/1 Georgia, serif; }
 
   .login-form {
-    position: relative;
-    width: 460px;
+    width: 100%;
     max-width: 100%;
-    padding: 160px 35px 0;
-    margin: 0 auto;
-    overflow: hidden;
   }
 
   .tips {
@@ -231,26 +235,7 @@ $light_gray:#eee;
     display: inline-block;
   }
 
-  .title-container {
-    position: relative;
-
-    .title {
-      font-size: 26px;
-      color: $light_gray;
-      margin: 0px auto 20px auto;
-      text-align: center;
-      font-weight: bold;
-    }
-  }
-
-  .footer {
-    p {
-      position:absolute;
-      bottom:0px;
-      padding:0px;
-      margin:0px;
-    }
-  }
+  .version { margin: 20px 0 0; color: #49716d; font-size: 12px; text-align: center; }
   .show-pwd {
     position: absolute;
     right: 10px;
@@ -259,6 +244,19 @@ $light_gray:#eee;
     color: $dark_gray;
     cursor: pointer;
     user-select: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .login-container {
+    padding: 16px;
+
+    .login-panel {
+      padding: 28px 24px;
+      box-shadow: 10px 10px 0 rgba(7, 27, 34, .22);
+    }
+
+    .brand-lockup { margin-bottom: 24px; }
   }
 }
 </style>

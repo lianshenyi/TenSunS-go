@@ -121,7 +121,7 @@ func TestLoginAndAuthContract(t *testing.T) {
 		t.Fatalf("info response: %d %v", status, body)
 	}
 	info := body["data"].(map[string]any)
-	if info["name"] != "admin" {
+	if info["name"] != "admin" || info["avatar"] != "/harbor-mark.svg" {
 		t.Fatalf("info = %v", info)
 	}
 	status, body = f.request(t, http.MethodGet, "/api/user/info", "", nil)
