@@ -48,3 +48,7 @@ bak-skey*
 # Logs and temporary files
 *.log
 tmp/
+
+# Release archives and ad-hoc screenshots
+/*.tar
+/*-login-*.png
