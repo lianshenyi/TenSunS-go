@@ -41,6 +41,8 @@ go test ./internal/cloud/... ./internal/sync ./internal/accounts ./internal/http
 
 For local development keep `scheduler_disabled=1` unless execution adapters are deliberately being tested. Before enabling it in a shared environment, give the cloud account read-only permissions for the listed APIs and submit credentials only through the application UI.
 
+The authenticated “同步” button sends `POST /api/jobs` with `job_dict.dialogStatus=run` and a `jobid`. It runs the scheduled job synchronously. On success the API returns the task record's `update：msg`; missing jobs, invalid parameters, and provider failures retain the existing generic `50000` business response and do not expose provider details.
+
 ## Test data and verification
 
 `make smoke` provisions compatible demonstration data. Log in with the password printed/configured by that setup; no application password is stored in the repository.

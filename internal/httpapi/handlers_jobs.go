@@ -207,10 +207,30 @@ func (s *Server) mutateJob(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": "更新成功！"})
 	case "run":
-		writeJSON(w, http.StatusOK, map[string]any{
-			"code": 50000,
-			"data": "Go 迁移阶段尚未实现：云同步任务执行器尚未接入。",
-		})
+		jobID := strings.TrimSpace(stringValue(req.JobDict["jobid"]))
+		if jobID == "" || s.jobs == nil {
+			s.businessError(w, fmt.Errorf("invalid run job request"))
+			return
+		}
+		if err := s.jobs.RunNow(r.Context(), jobID); err != nil {
+			s.businessError(w, fmt.Errorf("run job %q: %w", jobID, err))
+			return
+		}
+
+		data := "同步成功！"
+		var record struct {
+			Update string `json:"update"`
+			Msg    string `json:"msg"`
+		}
+		found, err := s.store.GetValue(r.Context(), "ConsulManager/record/jobs/"+jobID, &record)
+		if err != nil {
+			s.businessError(w, fmt.Errorf("read run job record %q: %w", jobID, err))
+			return
+		}
+		if found && record.Update != "" && record.Msg != "" {
+			data = record.Update + "：" + record.Msg
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": data})
 	default:
 		s.businessError(w, fmt.Errorf("unknown dialogStatus %q", status))
 	}

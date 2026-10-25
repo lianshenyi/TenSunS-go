@@ -30,4 +30,4 @@
 - [x] 实现 `sync.Cloud` 的 ECS/RDS/Redis Consul Service 写入、清理和 record 失败保护；保持阿里云资源任务不支持。
 - [x] 接入并注册腾讯云、华为云、AWS Provider 的只读 group/ECS/RDS/Redis API；AWS group 固定映射。
 - [x] 补凭据脱敏、Provider 单元、同步组合、调度路由与连续失败保护测试。
-- [ ] 更新 RUNBOOK，完成本地审查、推送 `main`、部署 `10.0.10.236` 并冒烟；真实凭据仅经应用流程验证。
+- [x] 更新 RUNBOOK，完成本地审查、推送 `main`、部署 `10.0.10.236` 并冒烟；真实凭据仅经应用流程验证。

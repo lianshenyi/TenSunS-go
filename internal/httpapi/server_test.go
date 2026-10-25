@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -28,6 +29,7 @@ const testPassword = "test-password"
 
 type fixture struct {
 	api    *httptest.Server
+	server *Server
 	mock   *consulmock.Server
 	store  *consul.Store
 	sched  *scheduler.Scheduler
@@ -87,7 +89,18 @@ func newFixtureWithProvider(t *testing.T, provider cloud.Provider) *fixture {
 		apiServer.Close()
 		sched.Close()
 	})
-	return &fixture{api: apiServer, mock: mock, store: st, sched: sched, cipher: cipher}
+	return &fixture{api: apiServer, server: api, mock: mock, store: st, sched: sched, cipher: cipher}
+}
+
+type jobSchedulerStub struct {
+	runNow func(context.Context, string) error
+}
+
+func (s jobSchedulerStub) NextRun(string) (time.Time, bool) { return time.Time{}, false }
+func (s jobSchedulerStub) Remove(string)                    {}
+func (s jobSchedulerStub) UpdateInterval(string, int) error { return nil }
+func (s jobSchedulerStub) RunNow(ctx context.Context, id string) error {
+	return s.runNow(ctx, id)
 }
 
 func TestCreateCloudAccountWithFakeProvider(t *testing.T) {
@@ -392,5 +405,51 @@ func TestJobUpdateAndDelete(t *testing.T) {
 	}
 	if _, ok := f.sched.NextRun("alicloud/main/ecs/cn-hangzhou"); ok {
 		t.Fatal("job still scheduled after delete")
+	}
+}
+
+func TestJobRunContract(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		f := newFixture(t)
+		token := f.login(t)
+		_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+			"job_dict": map[string]any{"dialogStatus": "run", "jobid": "alicloud/main/ecs/cn-hangzhou"},
+		})
+		if body["code"].(float64) != 20000 || body["data"] != "10.23/14:12：ECS同步成功！总数：2，开机：1，关机：1" {
+			t.Fatalf("run response = %v", body)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		jobID string
+		jobs  JobScheduler
+	}{
+		{name: "missing task", jobID: "missing"},
+		{name: "invalid parameter", jobID: "   "},
+		{
+			name:  "execution failure is redacted",
+			jobID: "alicloud/main/ecs/cn-hangzhou",
+			jobs: jobSchedulerStub{runNow: func(context.Context, string) error {
+				return errors.New("provider rejected secret access-key")
+			}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			if tc.jobs != nil {
+				f.server.jobs = tc.jobs
+			}
+			token := f.login(t)
+			_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+				"job_dict": map[string]any{"dialogStatus": "run", "jobid": tc.jobID},
+			})
+			if body["code"].(float64) != 50000 || body["data"] != "请求处理失败，请查看后端日志！" {
+				t.Fatalf("run error response = %v", body)
+			}
+			if strings.Contains(body["data"].(string), "provider") || strings.Contains(body["data"].(string), "access-key") {
+				t.Fatalf("provider error leaked in response: %v", body)
+			}
+		})
 	}
 }
