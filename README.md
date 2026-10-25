@@ -49,6 +49,52 @@
 
 ## 🛠构建与运行
 
+### 一键启动（Docker Compose）
+
+`docker-compose.yml` 编排了完整的三件套：**Consul（含 ACL）** + **Go 后端** + **Vue/Nginx 前端**，
+一条命令即可从零启动：
+
+```bash
+cp .env.example .env
+# 编辑 .env：至少要改 consul_management_token、consul_token、admin_passwd
+docker compose up -d --build
+```
+
+也可以用 Makefile 快捷目标（`make up` 会先自动生成 `.env`）：
+
+```bash
+make up        # env-init + docker compose up -d --build
+make ps        # 查看服务状态
+make logs      # 跟踪日志
+make down      # 停止并移除容器（保留数据卷）
+```
+
+启动后：
+
+| 服务 | 地址 | 说明 |
+| --- | --- | --- |
+| 前端 | `http://<host>:1026` | Nginx 托管 SPA，`/api/` 反代到后端 |
+| 后端 | `http://<host>:2026` | Go HTTP API |
+| Consul | `http://127.0.0.1:18500` | 仅绑定回环地址，默认不对外暴露 |
+
+几个关键约定：
+
+- `consul_token` 必须与 `consul_management_token` **完全一致**：Consul ACL 默认策略是 `deny`，
+  不一致会导致后端启动时的连通性检查失败。管理 token 由 `deploy/consul/init.sh` 写入
+  `consul.hcl` 完成 ACL 引导，无需手动 `consul acl bootstrap`。
+- 前端 Nginx 通过 Docker DNS 动态解析 `tensuns-go-api:2026`（见 `vue-consul/http-ops.conf`），
+  因此后端重建后前端无需重启；反之，**先启动后端再启动前端**。
+- 编排使用 `depends_on: service_healthy`，Consul 与后端都带健康检查，启动顺序自动保证。
+- Consul 数据保存在命名卷 `tensuns-go-consul-data` 中，`docker compose down` 不会删除；
+  需要完全重置时执行 `docker compose down -v`。
+- 演示数据可另行灌入：`python3 scripts/seed_demo.py http://127.0.0.1:18500/v1 <consul_token>`。
+
+> ⚠️ 默认 `scheduler_disabled=1`，调度器不加载 Consul 任务。这是刻意为之：
+> 四家云厂商的 Go 同步适配器尚未接线，启用调度只会产生重复报错。
+> 需要校验任务调度行为时，临时把它改成 `0` 再重启后端。
+
+### 单独构建
+
 ```bash
 make go-test    # 单元测试
 make go-smoke   # 使用内存 Consul 的兼容性冒烟测试
@@ -84,17 +130,25 @@ make web-image WEB_BUILD_ARGS="--build-arg NODE_IMAGE=... --build-arg NGINX_IMAG
 
 > Go 版本启动时会检查 Consul 连通性、初始化 `ConsulManager/assets/secret/skey`，并从 `ConsulManager/jobs`、`ConsulManager/jms/jobs` 读取任务。
 
+Compose 编排另外使用 `.env` 里的这些键（见 `.env.example`）：`consul_management_token`、
+`consul_token`、`admin_passwd`、`consul_http_bind` / `consul_http_port`、
+`api_http_bind` / `api_http_port`、`web_http_bind` / `web_http_port`、
+`scheduler_disabled`、`node_image` / `nginx_image`（基础镜像可指向内部镜像仓库）。
+
 ## 📁仓库结构
 
 ```text
 cmd/tensuns/        Go 后端入口
 cmd/consulmock/     内存 Consul 测试服务
 internal/           Go 实现与测试
-scripts/            兼容性冒烟测试
+scripts/            兼容性冒烟测试、演示数据灌入
 vue-consul/         Vue 前端
 flask-consul/       Python 迁移参考实现
+deploy/consul/      Compose 用的 Consul 配置模板与 ACL 引导脚本
 docs/               迁移基线、进度与使用文档
 install/            旧 Flask 版本的部署脚本，仅作历史参考
+docker-compose.yml  Consul + Go 后端 + Vue 前端 一键编排
+.env.example        Compose 环境变量模板（复制为 .env 后使用）
 ```
 
 > `install/` 下的脚本仍指向旧 Flask 镜像，不适用于当前 Go 骨架；Go 阶段请使用 `Dockerfile` / `make go-image`。
