@@ -1,7 +1,7 @@
 # TenSunS-go — one-command stack: Consul + Go API + Vue/Nginx frontend.
 #
-#   cp .env.example .env && edit .env
-#   docker compose up -d --build
+#   ./scripts/gen-env.sh          # 1. generate .env (random tokens + admin password)
+#   docker compose up -d --build  # 2. build images and start the stack
 #
 # The stack is self-contained: Consul runs in server mode with ACLs enabled and
 # a management token generated from .env, the Go API talks to it over the
@@ -9,6 +9,8 @@
 #
 # Notes:
 # - Secrets live in .env (git-ignored). Never commit real values.
+#   `cp .env.example .env` also works, but the three placeholders below must
+#   then be replaced by hand.
 # - `consul_token` must equal `consul_management_token`; the default_policy is
 #   "deny", so a mismatch makes the API fail its startup connectivity check.
 # - The frontend proxy target is `tensuns-go-api:2026`, matching

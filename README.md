@@ -52,14 +52,21 @@
 ### 一键启动（Docker Compose）
 
 `docker-compose.yml` 编排了完整的三件套：**Consul（含 ACL）** + **Go 后端** + **Vue/Nginx 前端**，
-一条命令即可从零启动：
+两条命令即可从零启动：
 
 ```bash
-make env-init   # 生成 .env，并随机生成 consul_management_token / consul_token / admin_passwd
-make up         # docker compose up -d --build
+./scripts/gen-env.sh          # 1. 生成 .env（随机生成 consul_management_token / consul_token / admin_passwd）
+docker compose up -d --build  # 2. 构建镜像并后台启动全套服务
 ```
 
-`make env-init` 会复制 `.env.example` 为 `.env`，为下面三项**随机生成**安全值，
+等价的 Makefile 快捷目标（`make up` 会先自动生成 `.env`）：
+
+```bash
+make env-init   # 等同于 ./scripts/gen-env.sh
+make up         # 等同于 docker compose up -d --build，并打印服务状态
+```
+
+`./scripts/gen-env.sh` 会复制 `.env.example` 为 `.env`，为下面三项**随机生成**安全值，
 并把 `.env` 权限设为 `600`：
 
 | 键 | 生成方式 |
@@ -73,19 +80,18 @@ make up         # docker compose up -d --build
 想手动控制内容、或想重新摇一套随机值：
 
 ```bash
-cp .env.example .env   # 手动编辑三项占位符
-make env-regen         # 重新随机生成并覆盖已有 .env
+cp .env.example .env       # 手动编辑三项占位符
+./scripts/gen-env.sh --force  # 重新随机生成并覆盖已有 .env（等价于 make env-regen）
 ```
 
 生成后的密码请自行留存——`.env` 不会写回仓库。
 
-也可以用 Makefile 快捷目标（`make up` 会先自动生成 `.env`）：
+其他常用命令：
 
 ```bash
-make up        # env-init + docker compose up -d --build
-make ps        # 查看服务状态
-make logs      # 跟踪日志
-make down      # 停止并移除容器（保留数据卷）
+docker compose ps        # 查看服务状态（等价于 make ps）
+docker compose logs -f   # 跟踪日志（等价于 make logs）
+docker compose down      # 停止并移除容器，保留数据卷（等价于 make down）
 ```
 
 启动后：
