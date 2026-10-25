@@ -72,6 +72,7 @@ func main() {
 
 	providers := cloud.NewRegistry()
 	providers.Register("alicloud", alicloud.New(st, cipher))
+	logCloudCapabilities(logger, providers)
 	cloudSync := syncservice.NewCloud(providers, st)
 	runtime := &jobs.Runtime{Cloud: cloudSync}
 	sched := scheduler.New(runtime, logger)
@@ -86,9 +87,6 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("tasks loaded from Consul", "loaded", loaded, "skipped", skipped)
-		if loaded > 0 {
-			logger.Warn("cloud provider registry is empty; cloud tasks will fail until adapters are registered")
-		}
 	}
 
 	creator := accounts.NewCreator(st, cipher, cloudSync, sched)
@@ -123,6 +121,13 @@ func main() {
 		logger.Error("HTTP server shutdown failed", "error", err)
 	}
 	logger.Info("TenSunS Go backend stopped")
+}
+
+// logCloudCapabilities makes startup limitations explicit without implying that
+// resource-group providers are unavailable.
+func logCloudCapabilities(logger *slog.Logger, providers *cloud.Registry) {
+	logger.Info("resource group providers registered", "providers", providers.Vendors())
+	logger.Warn("cloud ECS, RDS, and Redis task execution is not implemented; scheduled tasks of those kinds will fail")
 }
 
 func newLogger(level string) *slog.Logger {
