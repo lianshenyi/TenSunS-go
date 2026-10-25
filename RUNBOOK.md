@@ -25,6 +25,18 @@ Run `make smoke` from the repository root for the integrated compatibility check
 
 Use a local Consul only. Do not put cloud credentials, JumpServer tokens, or production passwords in source control.
 
+## Cloud-account creation (current migration boundary)
+
+`POST /api/jobs` accepts the existing `job_dict.dialogStatus=create` form. The request stores `ak` and `sk` encrypted at `ConsulManager/assets/{vendor}/aksk/{account}`, synchronizes resource groups first, then creates compatible group/ECS/RDS/Redis task KVs.
+
+The production binary deliberately starts with an empty cloud provider registry: it does not call cloud APIs or include vendor SDKs. A create request therefore returns business code `50000` until a later deployment injects a real provider. Unit and HTTP flow tests inject a fake provider; run them with:
+
+```bash
+go test ./internal/sync ./internal/accounts ./internal/httpapi
+```
+
+For local development keep `scheduler_disabled=1` unless execution adapters are deliberately being tested. Resource-group sync is the only cloud operation implemented by this change; ECS, RDS, and Redis task execution remains unavailable.
+
 ## Test data and verification
 
 `make smoke` provisions compatible demonstration data. Log in with the password printed/configured by that setup; no application password is stored in the repository.

@@ -17,13 +17,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lianshenyi/TenSunS-go/internal/accounts"
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud"
 	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/httpapi"
 	"github.com/lianshenyi/TenSunS-go/internal/jobs"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
+	syncservice "github.com/lianshenyi/TenSunS-go/internal/sync"
 	"github.com/lianshenyi/TenSunS-go/internal/version"
 )
 
@@ -66,7 +69,9 @@ func main() {
 	tokenSigner := cryptox.NewTokenSigner(skey)
 	authSvc := auth.New(cfg.AdminPasswd, tokenSigner)
 
-	runtime := &jobs.Runtime{}
+	providers := cloud.NewRegistry()
+	cloudSync := syncservice.NewCloud(providers, st)
+	runtime := &jobs.Runtime{Cloud: cloudSync}
 	sched := scheduler.New(runtime, logger)
 	defer sched.Close()
 
@@ -80,11 +85,12 @@ func main() {
 		}
 		logger.Info("tasks loaded from Consul", "loaded", loaded, "skipped", skipped)
 		if loaded > 0 {
-			logger.Warn("cloud/JMS execution adapters are not wired in this skeleton; scheduled jobs will log errors until injected")
+			logger.Warn("cloud provider registry is empty; cloud tasks will fail until adapters are registered")
 		}
 	}
 
-	api := httpapi.New(st, cipher, authSvc, sched, logger)
+	creator := accounts.NewCreator(st, cipher, cloudSync, sched)
+	api := httpapi.NewWithAccountCreator(st, cipher, authSvc, sched, creator, logger)
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           api.Handler(),

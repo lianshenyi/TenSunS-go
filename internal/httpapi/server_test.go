@@ -12,12 +12,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lianshenyi/TenSunS-go/internal/accounts"
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/model"
 	"github.com/lianshenyi/TenSunS-go/internal/consulmock"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/jobs"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
+	syncservice "github.com/lianshenyi/TenSunS-go/internal/sync"
 )
 
 const testPassword = "test-password"
@@ -31,6 +35,25 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
+	return newFixtureWithProvider(t, nil)
+}
+
+type httpFakeProvider struct{}
+
+func (httpFakeProvider) Group(context.Context, string) (map[string]string, error) {
+	return map[string]string{"group-1": "研发"}, nil
+}
+func (httpFakeProvider) ECS(context.Context, string, string, bool) (map[string]model.ECS, error) {
+	return nil, nil
+}
+func (httpFakeProvider) RDS(context.Context, string, string) (map[string]model.RDS, error) {
+	return nil, nil
+}
+func (httpFakeProvider) Redis(context.Context, string, string) (map[string]model.Redis, error) {
+	return nil, nil
+}
+
+func newFixtureWithProvider(t *testing.T, provider cloud.Provider) *fixture {
 	t.Helper()
 	mock := consulmock.New()
 	if err := mock.SeedDemo(); err != nil {
@@ -50,12 +73,55 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	authSvc := auth.New(testPassword, cryptox.NewTokenSigner("0123456789abcdef0123456789abcdef"))
-	apiServer := httptest.NewServer(New(st, cipher, authSvc, sched, logger).Handler())
+	var api *Server
+	if provider == nil {
+		api = New(st, cipher, authSvc, sched, logger)
+	} else {
+		registry := cloud.NewRegistry()
+		registry.Register("fake", provider)
+		cloudSync := syncservice.NewCloud(registry, st)
+		api = NewWithAccountCreator(st, cipher, authSvc, sched, accounts.NewCreator(st, cipher, cloudSync, sched), logger)
+	}
+	apiServer := httptest.NewServer(api.Handler())
 	t.Cleanup(func() {
 		apiServer.Close()
 		sched.Close()
 	})
 	return &fixture{api: apiServer, mock: mock, store: st, sched: sched, cipher: cipher}
+}
+
+func TestCreateCloudAccountWithFakeProvider(t *testing.T) {
+	f := newFixtureWithProvider(t, httpFakeProvider{})
+	token := f.login(t)
+	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+		"job_dict": map[string]any{
+			"dialogStatus": "create", "vendor": "fake", "account": "demo", "ak": "access", "sk": "secret",
+			"restype": []string{"group", "ecs", "rds"}, "region": []string{"test-1"}, "proj_interval": 60,
+			"ecs_interval": 10, "rds_interval": 20, "redis_interval": 20, "isextip": true,
+		},
+	})
+	if body["code"].(float64) != 20000 {
+		t.Fatalf("create response = %v", body)
+	}
+	var groups map[string]string
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/fake/group/demo", &groups); err != nil || !found || groups["group-1"] != "研发" {
+		t.Fatalf("groups found=%v err=%v value=%v", found, err, groups)
+	}
+	var credentials map[string]string
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/fake/aksk/demo", &credentials); err != nil || !found {
+		t.Fatalf("credentials found=%v err=%v", found, err)
+	}
+	if plain, err := f.cipher.Decrypt(credentials["sk"]); err != nil || plain != "secret" {
+		t.Fatalf("credential plaintext=%q err=%v", plain, err)
+	}
+	for _, id := range []string{"fake/demo/group", "fake/demo/ecs/test-1", "fake/demo/rds/test-1"} {
+		if _, found := f.mock.GetKV("ConsulManager/jobs/" + id); !found {
+			t.Fatalf("missing task %s", id)
+		}
+		if _, found := f.sched.NextRun(id); !found {
+			t.Fatalf("task not scheduled %s", id)
+		}
+	}
 }
 
 func (f *fixture) request(t *testing.T, method, path, token string, body any) (int, map[string]any) {

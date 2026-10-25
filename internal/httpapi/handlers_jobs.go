@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lianshenyi/TenSunS-go/internal/accounts"
 	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 )
@@ -156,6 +157,26 @@ func (s *Server) mutateJob(w http.ResponseWriter, r *http.Request) {
 	}
 	status := stringValue(req.JobDict["dialogStatus"])
 	switch status {
+	case "create":
+		if s.creator == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"code": 50000, "data": "Go 迁移阶段尚未实现：新增云账户任务需要资源组同步适配器。"})
+			return
+		}
+		raw, err := json.Marshal(req.JobDict)
+		if err != nil {
+			s.businessError(w, fmt.Errorf("encode create job request: %w", err))
+			return
+		}
+		var create accounts.Request
+		if err := json.Unmarshal(raw, &create); err != nil {
+			s.businessError(w, fmt.Errorf("decode create job request: %w", err))
+			return
+		}
+		if err := s.creator.Create(r.Context(), create); err != nil {
+			s.businessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": create.Vendor + "/" + create.Account + "：创建成功！"})
 	case "update":
 		jobID := stringValue(req.JobDict["jobid"])
 		interval, err := intValue(req.JobDict["interval"])
@@ -185,11 +206,6 @@ func (s *Server) mutateJob(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": "更新成功！"})
-	case "create":
-		writeJSON(w, http.StatusOK, map[string]any{
-			"code": 50000,
-			"data": "Go 迁移阶段尚未实现：新增云账户任务需要资源组同步适配器。",
-		})
 	case "run":
 		writeJSON(w, http.StatusOK, map[string]any{
 			"code": 50000,
