@@ -30,11 +30,14 @@ func (fakeProvider) Redis(context.Context, string, string) (map[string]model.Red
 
 func TestECSWritesServicesCleansStaleAndRecords(t *testing.T) {
 	mock := consulmock.New()
+	if err := mock.SetKV("ConsulManager/assets/tencent_cloud/group/main", map[string]string{"1": "project"}); err != nil {
+		t.Fatal(err)
+	}
 	mock.SetService("old", "tencent_cloud_main_ecs", "10.0.0.9", 9100, []string{"ON", "linux", "ap-guangzhou"}, map[string]string{"account": "main"})
 	server := httptest.NewServer(mock.Handler())
 	defer server.Close()
 	registry := cloud.NewRegistry()
-	registry.Register("tencent_cloud", fakeProvider{ecs: map[string]model.ECS{"ins-1": {Name: "web", Group: "project", OSType: "linux", Status: "RUNNING", IP: "10.0.0.1", CPU: "2核", Mem: "4GB", Exp: "按量", Tags: map[string]string{"env": "prod", "bad-key": "ignored"}}}})
+	registry.Register("tencent_cloud", fakeProvider{ecs: map[string]model.ECS{"ins-1": {Name: "web", Group: "1", OSType: "linux", Status: "RUNNING", IP: "10.0.0.1", CPU: "2核", Mem: "4GB", Exp: "按量", Tags: map[string]string{"env": "prod", "bad-key": "ignored"}}}})
 	svc := New(consul.New(server.URL+"/v1", "", server.Client()), registry)
 	svc.Now = func() time.Time { return time.Date(2026, 10, 26, 8, 9, 0, 0, time.Local) }
 	if err := svc.ECS(context.Background(), "tencent_cloud", "main", "ap-guangzhou", false); err != nil {
@@ -56,5 +59,22 @@ func TestECSWritesServicesCleansStaleAndRecords(t *testing.T) {
 	}
 	if record["status"] != float64(20000) {
 		t.Fatalf("record=%v", record)
+	}
+}
+
+func TestECSFailsAndRecordsWhenGroupMappingIsMissing(t *testing.T) {
+	mock := consulmock.New()
+	server := httptest.NewServer(mock.Handler())
+	defer server.Close()
+	registry := cloud.NewRegistry()
+	registry.Register("huaweicloud", fakeProvider{ecs: map[string]model.ECS{"srv-1": {Group: "project-1"}}})
+	svc := New(consul.New(server.URL+"/v1", "", server.Client()), registry)
+	if err := svc.ECS(context.Background(), "huaweicloud", "main", "cn-north-4", false); err == nil {
+		t.Fatal("ECS unexpectedly succeeded without group mapping")
+	}
+	var record map[string]any
+	raw, found := mock.GetKV("ConsulManager/record/jobs/huaweicloud/main/ecs/cn-north-4")
+	if !found || json.Unmarshal(raw, &record) != nil || record["status"] != float64(50000) {
+		t.Fatalf("failure record = %s", raw)
 	}
 }

@@ -19,7 +19,10 @@ import (
 
 // Provider creates short-lived Tencent SDK clients so decrypted credentials do
 // not remain in memory between scheduler executions.
-type Provider struct{ Secrets cloud.SecretResolver }
+type Provider struct {
+	Secrets  cloud.SecretResolver
+	Endpoint string // test-only HTTP endpoint override.
+}
 
 func New(secrets cloud.SecretResolver) *Provider { return &Provider{Secrets: secrets} }
 
@@ -29,7 +32,7 @@ func (p *Provider) Group(ctx context.Context, account string) (map[string]string
 		return nil, err
 	}
 	// DCDB is the only Tencent API that exposes the shared ProjectId catalogue.
-	client, _ := dcdb.NewClient(common.NewCredential(secret.AccessKey, secret.SecretKey), "ap-guangzhou", profile.NewClientProfile())
+	client, _ := dcdb.NewClient(common.NewCredential(secret.AccessKey, secret.SecretKey), "ap-guangzhou", p.profile())
 	response, err := client.DescribeProjectsWithContext(ctx, dcdb.NewDescribeProjectsRequest())
 	if err != nil {
 		return nil, fmt.Errorf("Tencent DCDB DescribeProjects: %w", err)
@@ -51,31 +54,45 @@ func (p *Provider) ECS(ctx context.Context, account, region string, external boo
 	if err != nil {
 		return nil, err
 	}
-	client, _ := cvm.NewClient(common.NewCredential(secret.AccessKey, secret.SecretKey), region, profile.NewClientProfile())
-	resp, err := client.DescribeInstancesWithContext(ctx, cvm.NewDescribeInstancesRequest())
-	if err != nil {
-		return nil, fmt.Errorf("Tencent CVM DescribeInstances: %w", err)
-	}
+	client, _ := cvm.NewClient(common.NewCredential(secret.AccessKey, secret.SecretKey), region, p.profile())
 	out := map[string]model.ECS{}
-	for _, v := range resp.Response.InstanceSet {
-		if v.InstanceId == nil {
-			continue
+	for offset := int64(0); ; offset += 100 {
+		request := cvm.NewDescribeInstancesRequest()
+		request.Offset, request.Limit = &offset, int64p(100)
+		resp, err := client.DescribeInstancesWithContext(ctx, request)
+		if err != nil {
+			return nil, fmt.Errorf("Tencent CVM DescribeInstances: %w", err)
 		}
-		ip := first(v.PrivateIpAddresses)
-		if external {
-			ip = first(v.PublicIpAddresses)
+		if resp.Response == nil {
+			break
 		}
-		tags := map[string]string{}
-		for _, t := range v.Tags {
-			if t.Key != nil && t.Value != nil {
-				tags[*t.Key] = *t.Value
+		for _, v := range resp.Response.InstanceSet {
+			if v.InstanceId == nil {
+				continue
 			}
+			ip := first(v.PrivateIpAddresses)
+			if external {
+				ip = first(v.PublicIpAddresses)
+			}
+			tags := map[string]string{}
+			for _, t := range v.Tags {
+				if t.Key != nil && t.Value != nil {
+					tags[*t.Key] = *t.Value
+				}
+			}
+			exp := "按量"
+			if v.ExpiredTime != nil && *v.ExpiredTime != "" {
+				exp = (*v.ExpiredTime)[:min(10, len(*v.ExpiredTime))]
+			}
+			group := "0"
+			if v.Placement != nil {
+				group = strconv.FormatInt(num(v.Placement.ProjectId), 10)
+			}
+			out[*v.InstanceId] = model.ECS{Name: str(v.InstanceName), Group: group, OSType: os(str(v.OsName)), Status: str(v.InstanceState), Region: region, IP: ip, CPU: fmt.Sprintf("%d核", num(v.CPU)), Mem: fmt.Sprintf("%dGB", num(v.Memory)), Exp: exp, Tags: tags}
 		}
-		exp := "按量"
-		if v.ExpiredTime != nil && *v.ExpiredTime != "" {
-			exp = (*v.ExpiredTime)[:min(10, len(*v.ExpiredTime))]
+		if len(resp.Response.InstanceSet) < 100 {
+			break
 		}
-		out[*v.InstanceId] = model.ECS{Name: str(v.InstanceName), Group: "无", OSType: os(str(v.OsName)), Status: str(v.InstanceState), Region: region, IP: ip, CPU: fmt.Sprintf("%d核", num(v.CPU)), Mem: fmt.Sprintf("%dGB", num(v.Memory)), Exp: exp, Tags: tags}
 	}
 	return out, nil
 }
@@ -85,8 +102,10 @@ func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	client, _ := cdb.NewClient(common.NewCredential(secret.AccessKey, secret.SecretKey), region, profile.NewClientProfile())
-	resp, err := client.DescribeDBInstancesWithContext(ctx, cdb.NewDescribeDBInstancesRequest())
+	client, _ := cdb.NewClient(common.NewCredential(secret.AccessKey, secret.SecretKey), region, p.profile())
+	request := cdb.NewDescribeDBInstancesRequest()
+	request.Limit = uint64p(2000)
+	resp, err := client.DescribeDBInstancesWithContext(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("Tencent CDB DescribeDBInstances: %w", err)
 	}
@@ -96,7 +115,7 @@ func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]
 			continue
 		}
 		ip := str(v.Vip)
-		out[*v.InstanceId] = model.RDS{Name: str(v.InstanceName), Domain: ip, IP: ip, Port: int(num(v.Vport)), Region: region, Group: "无", Status: fmt.Sprintf("%d", num(v.Status)), IType: str(v.DeviceType), Ver: str(v.EngineVersion), Exp: "按量", CPU: "无", Mem: "无", Disk: "无"}
+		out[*v.InstanceId] = model.RDS{Name: str(v.InstanceName), Domain: ip, IP: ip, Port: int(num(v.Vport)), Region: region, Group: strconv.FormatInt(num(v.ProjectId), 10), Status: cdbStatus(num(v.Status)), IType: cdbType(num(v.InstanceType)), Ver: str(v.EngineVersion), Exp: deadline(v.DeadlineTime), CPU: "无", Mem: "无", Disk: "无"}
 	}
 	return out, nil
 }
@@ -106,8 +125,10 @@ func (p *Provider) Redis(ctx context.Context, account, region string) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	client, _ := redis.NewClient(common.NewCredential(secret.AccessKey, secret.SecretKey), region, profile.NewClientProfile())
-	resp, err := client.DescribeInstancesWithContext(ctx, redis.NewDescribeInstancesRequest())
+	client, _ := redis.NewClient(common.NewCredential(secret.AccessKey, secret.SecretKey), region, p.profile())
+	request := redis.NewDescribeInstancesRequest()
+	request.Limit = uint64p(1000)
+	resp, err := client.DescribeInstancesWithContext(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("Tencent Redis DescribeInstances: %w", err)
 	}
@@ -117,7 +138,7 @@ func (p *Provider) Redis(ctx context.Context, account, region string) (map[strin
 			continue
 		}
 		ip := str(v.WanIp)
-		out[*v.InstanceId] = model.Redis{Name: str(v.InstanceName), Domain: ip, IP: ip, Port: int(num(v.Port)), Region: region, Group: str(v.ProjectName), Status: fmt.Sprintf("%d", num(v.Status)), IType: fmt.Sprintf("%d", num(v.Type)), Ver: str(v.Engine), Mem: fmt.Sprintf("%.0fMB", number(v.Size)), Exp: "按量"}
+		out[*v.InstanceId] = model.Redis{Name: str(v.InstanceName), Domain: ip, IP: ip, Port: int(num(v.Port)), Region: region, Group: strconv.FormatInt(num(v.ProjectId), 10), Status: redisStatus(num(v.Status)), IType: redisType(num(v.Type)), Ver: str(v.Engine), Mem: fmt.Sprintf("%.0fMB", number(v.Size)), Exp: deadline(v.DeadlineTime)}
 	}
 	return out, nil
 }
@@ -145,6 +166,46 @@ func number(v *float64) float64 {
 		return 0
 	}
 	return *v
+}
+func int64p(v int64) *int64    { return &v }
+func uint64p(v uint64) *uint64 { return &v }
+func deadline(v *string) string {
+	if value := str(v); value != "" && value != "0000-00-00 00:00:00" {
+		return value
+	}
+	return "按量"
+}
+func cdbStatus(v int64) string {
+	if v == 1 {
+		return "运行中"
+	}
+	return "非运行中"
+}
+func redisStatus(v int64) string {
+	if v == 2 {
+		return "运行中"
+	}
+	return "非运行中"
+}
+func cdbType(v int64) string {
+	return map[int64]string{1: "主实例", 2: "灾备实例", 3: "只读实例"}[v]
+}
+func redisType(v int64) string {
+	if v == 5 {
+		return "单机"
+	}
+	if v == 4 || v == 7 || v == 9 || v == 16 || v == 18 || v == 20 || v == 22 || v == 200 {
+		return "集群"
+	}
+	return "主从"
+}
+func (p *Provider) profile() *profile.ClientProfile {
+	result := profile.NewClientProfile()
+	if p.Endpoint != "" {
+		result.HttpProfile.Scheme = "HTTP"
+		result.HttpProfile.Endpoint = strings.TrimPrefix(p.Endpoint, "http://")
+	}
+	return result
 }
 func os(v string) string {
 	if strings.Contains(strings.ToLower(v), "win") {

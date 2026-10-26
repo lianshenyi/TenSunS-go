@@ -47,6 +47,9 @@ func (s *Sync) ECS(ctx context.Context, vendor, account, region string, external
 	}
 	resources, err := provider.ECS(ctx, account, region, externalIP)
 	if err == nil {
+		err = s.resolveECSGroups(ctx, vendor, account, resources)
+	}
+	if err == nil {
 		var on, off int
 		on, off, err = s.writeECS(ctx, vendor, account, region, resources)
 		if err == nil {
@@ -62,6 +65,9 @@ func (s *Sync) RDS(ctx context.Context, vendor, account, region string) error {
 		return s.failure(ctx, vendor, account, "rds", region, err)
 	}
 	resources, err := provider.RDS(ctx, account, region)
+	if err == nil {
+		err = s.resolveRDSGroups(ctx, vendor, account, resources)
+	}
 	if err == nil {
 		var on, off int
 		on, off, err = s.writeRDS(ctx, vendor, account, region, resources)
@@ -79,6 +85,9 @@ func (s *Sync) Redis(ctx context.Context, vendor, account, region string) error 
 	}
 	resources, err := provider.Redis(ctx, account, region)
 	if err == nil {
+		err = s.resolveRedisGroups(ctx, vendor, account, resources)
+	}
+	if err == nil {
 		var on, off int
 		on, off, err = s.writeRedis(ctx, vendor, account, region, resources)
 		if err == nil {
@@ -86,6 +95,70 @@ func (s *Sync) Redis(ctx context.Context, vendor, account, region string) error 
 		}
 	}
 	return s.failure(ctx, vendor, account, "redis", region, err)
+}
+
+// resolveGroups translates vendor resource-group IDs only for providers whose
+// legacy contract stores IDs in resource responses.  A missing mapping is a
+// failed resource sync: silently publishing an ID breaks the UI/JMS contract.
+func (s *Sync) resolveGroups(ctx context.Context, vendor, account string) (map[string]string, error) {
+	if vendor != "tencent_cloud" && vendor != "huaweicloud" {
+		return nil, nil
+	}
+	groups := map[string]string{}
+	found, err := s.Store.GetValue(ctx, assetPath(vendor, "group", account), &groups)
+	if err != nil {
+		return nil, fmt.Errorf("read %s resource groups: %w", vendor, err)
+	}
+	if !found {
+		return nil, fmt.Errorf("%s resource groups for account %q are missing; run group sync first", vendor, account)
+	}
+	return groups, nil
+}
+
+func (s *Sync) resolveECSGroups(ctx context.Context, vendor, account string, resources map[string]model.ECS) error {
+	groups, err := s.resolveGroups(ctx, vendor, account)
+	if err != nil || groups == nil {
+		return err
+	}
+	for id, resource := range resources {
+		name, ok := groups[resource.Group]
+		if !ok {
+			return fmt.Errorf("resource group %q for ECS %q is missing", resource.Group, id)
+		}
+		resource.Group = name
+		resources[id] = resource
+	}
+	return nil
+}
+func (s *Sync) resolveRDSGroups(ctx context.Context, vendor, account string, resources map[string]model.RDS) error {
+	groups, err := s.resolveGroups(ctx, vendor, account)
+	if err != nil || groups == nil {
+		return err
+	}
+	for id, resource := range resources {
+		name, ok := groups[resource.Group]
+		if !ok {
+			return fmt.Errorf("resource group %q for RDS %q is missing", resource.Group, id)
+		}
+		resource.Group = name
+		resources[id] = resource
+	}
+	return nil
+}
+func (s *Sync) resolveRedisGroups(ctx context.Context, vendor, account string, resources map[string]model.Redis) error {
+	groups, err := s.resolveGroups(ctx, vendor, account)
+	if err != nil || groups == nil {
+		return err
+	}
+	for id, resource := range resources {
+		name, ok := groups[resource.Group]
+		if !ok {
+			return fmt.Errorf("resource group %q for Redis %q is missing", resource.Group, id)
+		}
+		resource.Group = name
+		resources[id] = resource
+	}
+	return nil
 }
 
 func (s *Sync) provider(vendor string) (cloud.Provider, error) {
