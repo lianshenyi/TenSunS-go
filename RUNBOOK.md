@@ -28,6 +28,11 @@ AWS account credentials are stored only in Consul at
 `ak`/`sk` shape. The process decrypts them only while creating the AWS SDK
 client; do not place plaintext cloud credentials in environment variables.
 
+Tencent Cloud and Huawei Cloud use the same AES-encrypted `ak`/`sk` shape at
+`ConsulManager/assets/tencent_cloud/aksk/<account>` and
+`ConsulManager/assets/huaweicloud/aksk/<account>`. Grant each account
+read-only CVM/CDB/Redis or ECS/RDS/DCS permissions before enabling its jobs.
+
 Use a local Consul only. Do not put cloud credentials, JumpServer tokens, or production passwords in source control.
 
 ## Test data and verification
@@ -59,4 +64,7 @@ The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `a
 - If an AWS job writes a failure record, check its `msg` in
   `ConsulManager/record/jobs/awscloud/<account>/<type>/<region>` and confirm
   the account has least-privilege permissions for EC2, RDS, and ElastiCache.
+- For Tencent or Huawei failures, inspect the equivalent provider record and
+  verify the selected region and read-only API permissions; credentials are
+  never written to application logs.
 - If `npm install` fails on an old runtime, use Node 14+ for this Vue CLI 4 project.

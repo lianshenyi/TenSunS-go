@@ -20,6 +20,8 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
 	awscloud "github.com/lianshenyi/TenSunS-go/internal/cloud/aws"
+	huaweicloud "github.com/lianshenyi/TenSunS-go/internal/cloud/huawei"
+	tencentcloud "github.com/lianshenyi/TenSunS-go/internal/cloud/tencent"
 	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/httpapi"
@@ -72,6 +74,8 @@ func main() {
 	providers := cloud.NewRegistry()
 	secrets := cloud.SecretResolver{Store: st, Cipher: cipher}
 	providers.Register("awscloud", awscloud.New(secrets))
+	providers.Register("tencent_cloud", tencentcloud.New(secrets))
+	providers.Register("huaweicloud", huaweicloud.New(secrets))
 	cloudSync := syncservice.New(st, providers)
 	runtime := &jobs.Runtime{Cloud: cloudSync}
 	sched := scheduler.New(runtime, logger)
