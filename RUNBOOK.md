@@ -21,7 +21,12 @@ Run `make smoke` from the repository root for the integrated compatibility check
 
 - `CONSUL_ADDR=127.0.0.1:8500`
 - `TENSUNS_API=http://127.0.0.1:2026` (optional Vue dev proxy override)
-- `scheduler_disabled=1` (recommended while cloud adapters are unavailable)
+- `scheduler_disabled=1` (use while validating or before configuring a cloud account)
+
+AWS account credentials are stored only in Consul at
+`ConsulManager/assets/awscloud/aksk/<account>` in the existing AES-encrypted
+`ak`/`sk` shape. The process decrypts them only while creating the AWS SDK
+client; do not place plaintext cloud credentials in environment variables.
 
 Use a local Consul only. Do not put cloud credentials, JumpServer tokens, or production passwords in source control.
 
@@ -51,4 +56,7 @@ The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `a
 
 - If the Vue app cannot call `/api`, start the Go API first and check `TENSUNS_API` / `vue.config.js` proxy settings.
 - If API startup fails, confirm Consul is listening at `CONSUL_ADDR` and its KV data has been seeded.
+- If an AWS job writes a failure record, check its `msg` in
+  `ConsulManager/record/jobs/awscloud/<account>/<type>/<region>` and confirm
+  the account has least-privilege permissions for EC2, RDS, and ElastiCache.
 - If `npm install` fails on an old runtime, use Node 14+ for this Vue CLI 4 project.

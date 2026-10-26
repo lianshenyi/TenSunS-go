@@ -18,12 +18,15 @@ import (
 	"time"
 
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud"
+	awscloud "github.com/lianshenyi/TenSunS-go/internal/cloud/aws"
 	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/httpapi"
 	"github.com/lianshenyi/TenSunS-go/internal/jobs"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
+	syncservice "github.com/lianshenyi/TenSunS-go/internal/sync"
 	"github.com/lianshenyi/TenSunS-go/internal/version"
 )
 
@@ -66,7 +69,11 @@ func main() {
 	tokenSigner := cryptox.NewTokenSigner(skey)
 	authSvc := auth.New(cfg.AdminPasswd, tokenSigner)
 
-	runtime := &jobs.Runtime{}
+	providers := cloud.NewRegistry()
+	secrets := cloud.SecretResolver{Store: st, Cipher: cipher}
+	providers.Register("awscloud", awscloud.New(secrets))
+	cloudSync := syncservice.New(st, providers)
+	runtime := &jobs.Runtime{Cloud: cloudSync}
 	sched := scheduler.New(runtime, logger)
 	defer sched.Close()
 
@@ -80,7 +87,7 @@ func main() {
 		}
 		logger.Info("tasks loaded from Consul", "loaded", loaded, "skipped", skipped)
 		if loaded > 0 {
-			logger.Warn("cloud/JMS execution adapters are not wired in this skeleton; scheduled jobs will log errors until injected")
+			logger.Warn("unregistered cloud vendors and JumpServer jobs will report a failure record until their adapters are configured", "registered_vendors", providers.Vendors())
 		}
 	}
 
