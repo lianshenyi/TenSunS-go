@@ -7,10 +7,14 @@ import (
 	"strings"
 
 	"github.com/huaweicloud/huaweicloud-sdk-go-v3/core/auth/basic"
+	bss "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/bss/v2"
+	bssmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/bss/v2/model"
 	dcs "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/dcs/v2"
 	dcsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/dcs/v2/model"
 	ecs "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/ecs/v2"
 	ecsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/ecs/v2/model"
+	eps "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/eps/v1"
+	epsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/eps/v1/model"
 	rds "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/rds/v3"
 	rdsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/rds/v3/model"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
@@ -20,12 +24,33 @@ import (
 type Provider struct{ Secrets cloud.SecretResolver }
 
 func New(secrets cloud.SecretResolver) *Provider { return &Provider{Secrets: secrets} }
-func (p *Provider) Group(context.Context, string) (map[string]string, error) {
-	return map[string]string{}, nil
+func (p *Provider) Group(ctx context.Context, account string) (map[string]string, error) {
+	c, err := p.credential(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	// EPS is account-global and its documented endpoint is in cn-north-4.
+	client := eps.NewEpsClient(eps.EpsClientBuilder().WithEndpoint("https://eps.cn-north-4.myhuaweicloud.com").WithCredential(c).Build())
+	offset := int32(0)
+	response, err := client.ListEnterpriseProject(&epsmodel.ListEnterpriseProjectRequest{Offset: &offset})
+	if err != nil {
+		return nil, fmt.Errorf("Huawei EPS ListEnterpriseProject: %w", err)
+	}
+	groups := make(map[string]string)
+	if response.EnterpriseProjects != nil {
+		for _, project := range *response.EnterpriseProjects {
+			groups[project.Id] = project.Name
+		}
+	}
+	return groups, nil
 }
 
 func (p *Provider) ECS(ctx context.Context, account, region string, external bool) (map[string]model.ECS, error) {
 	c, err := p.credential(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	expires, err := p.expires(c)
 	if err != nil {
 		return nil, err
 	}
@@ -41,9 +66,38 @@ func (p *Provider) ECS(ctx context.Context, account, region string, external boo
 	}
 	for _, v := range *resp.Servers {
 		ip := address(v.Addresses, external)
-		out[v.Id] = model.ECS{Name: v.Name, Group: "无", OSType: os(v.Metadata["os_type"]), Status: v.Status, Region: region, IP: ip, CPU: "0核", Mem: "0GB", Exp: "-"}
+		exp := expires[v.Id]
+		if exp == "" {
+			exp = "-"
+		}
+		cpu, mem := "0核", "0GB"
+		if v.Flavor != nil {
+			cpu, mem = v.Flavor.Vcpus+"核", memory(v.Flavor.Ram)
+		}
+		out[v.Id] = model.ECS{Name: v.Name, Group: "无", OSType: os(v.Metadata["os_type"]), Status: v.Status, Region: region, IP: ip, CPU: cpu, Mem: mem, Exp: exp}
 	}
 	return out, nil
+}
+
+func (p *Provider) expires(c *basic.Credentials) (map[string]string, error) {
+	// BSS is account-global and deliberately queried before ECS to preserve the
+	// Python implementation's resource-id to expiry-date contract.
+	client := bss.NewBssClient(bss.BssClientBuilder().WithEndpoint("https://bss.cn-north-1.myhuaweicloud.com").WithCredential(c).Build())
+	limit, onlyMain := int32(500), int32(1)
+	status := []int32{2}
+	response, err := client.ListPayPerUseCustomerResources(&bssmodel.ListPayPerUseCustomerResourcesRequest{Body: &bssmodel.QueryResourcesReq{Limit: &limit, OnlyMainResource: &onlyMain, StatusList: &status}})
+	if err != nil {
+		return nil, fmt.Errorf("Huawei BSS ListPayPerUseCustomerResources: %w", err)
+	}
+	expires := make(map[string]string)
+	if response.Data != nil {
+		for _, resource := range *response.Data {
+			if resource.ResourceId != nil && resource.ExpireTime != nil {
+				expires[*resource.ResourceId] = date(*resource.ExpireTime)
+			}
+		}
+	}
+	return expires, nil
 }
 func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]model.RDS, error) {
 	c, err := p.credential(ctx, account)
@@ -125,6 +179,22 @@ func number(v *int32) int32 {
 		return 0
 	}
 	return *v
+}
+func memory(v string) string {
+	if v == "" {
+		return "0GB"
+	}
+	var megabytes float64
+	if _, err := fmt.Sscan(v, &megabytes); err != nil {
+		return "0GB"
+	}
+	return fmt.Sprintf("%gGB", megabytes/1024)
+}
+func date(v string) string {
+	if len(v) >= 10 {
+		return v[:10]
+	}
+	return v
 }
 func os(v string) string {
 	if strings.Contains(strings.ToLower(v), "win") {

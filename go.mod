@@ -13,6 +13,7 @@ require (
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/cdb v1.3.197
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.199
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/cvm v1.3.183
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/dcdb v1.3.169
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/redis v1.3.194
 )
 
@@ -31,6 +32,7 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421 // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/shopspring/decimal v1.3.1 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	go.mongodb.org/mongo-driver v1.12.0 // indirect
 	golang.org/x/crypto v0.23.0 // indirect

@@ -31,7 +31,10 @@ client; do not place plaintext cloud credentials in environment variables.
 Tencent Cloud and Huawei Cloud use the same AES-encrypted `ak`/`sk` shape at
 `ConsulManager/assets/tencent_cloud/aksk/<account>` and
 `ConsulManager/assets/huaweicloud/aksk/<account>`. Grant each account
-read-only CVM/CDB/Redis or ECS/RDS/DCS permissions before enabling its jobs.
+read-only CVM/CDB/Redis/DCDB or ECS/RDS/DCS/EPS/BSS permissions before enabling
+its jobs. Tencent resource-group discovery calls DCDB in `ap-guangzhou`;
+Huawei enterprise projects and ECS expiry dates call EPS in `cn-north-4` and
+BSS in `cn-north-1`, respectively.
 
 Use a local Consul only. Do not put cloud credentials, JumpServer tokens, or production passwords in source control.
 
@@ -65,6 +68,7 @@ The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `a
   `ConsulManager/record/jobs/awscloud/<account>/<type>/<region>` and confirm
   the account has least-privilege permissions for EC2, RDS, and ElastiCache.
 - For Tencent or Huawei failures, inspect the equivalent provider record and
-  verify the selected region and read-only API permissions; credentials are
-  never written to application logs.
+  verify the selected region and read-only API permissions (including DCDB,
+  EPS, and BSS for project/expiry discovery); credentials are never written to
+  application logs.
 - If `npm install` fails on an old runtime, use Node 14+ for this Vue CLI 4 project.

@@ -4,6 +4,7 @@ package tencent
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
@@ -12,6 +13,7 @@ import (
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
 	cvm "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/cvm/v20170312"
+	dcdb "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/dcdb/v20180411"
 	redis "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/redis/v20180412"
 )
 
@@ -21,10 +23,27 @@ type Provider struct{ Secrets cloud.SecretResolver }
 
 func New(secrets cloud.SecretResolver) *Provider { return &Provider{Secrets: secrets} }
 
-func (p *Provider) Group(context.Context, string) (map[string]string, error) {
-	// Project IDs are returned with each resource; ECS/RDS/Redis stay usable if
-	// the account lacks the optional DCDB project-list permission.
-	return map[string]string{}, nil
+func (p *Provider) Group(ctx context.Context, account string) (map[string]string, error) {
+	secret, err := p.Secrets.Resolve(ctx, "tencent_cloud", account)
+	if err != nil {
+		return nil, err
+	}
+	// DCDB is the only Tencent API that exposes the shared ProjectId catalogue.
+	client, _ := dcdb.NewClient(common.NewCredential(secret.AccessKey, secret.SecretKey), "ap-guangzhou", profile.NewClientProfile())
+	response, err := client.DescribeProjectsWithContext(ctx, dcdb.NewDescribeProjectsRequest())
+	if err != nil {
+		return nil, fmt.Errorf("Tencent DCDB DescribeProjects: %w", err)
+	}
+	groups := make(map[string]string)
+	if response.Response == nil {
+		return groups, nil
+	}
+	for _, project := range response.Response.Projects {
+		if project.ProjectId != nil && project.Name != nil {
+			groups[strconv.FormatInt(*project.ProjectId, 10)] = *project.Name
+		}
+	}
+	return groups, nil
 }
 
 func (p *Provider) ECS(ctx context.Context, account, region string, external bool) (map[string]model.ECS, error) {
