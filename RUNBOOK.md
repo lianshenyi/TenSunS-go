@@ -48,6 +48,21 @@ npm run build:prod
 npm run test:ci
 ```
 
+### Go 1.22 verification plan
+
+The module intentionally declares `go 1.22` and has no `toolchain` directive.
+Run the backend gate in a Go 1.22 environment before merging; a local Docker
+engine can provide that environment without changing the developer toolchain:
+
+```bash
+docker run --rm -v "$PWD:/src" -w /src golang:1.22 \
+  sh -ec 'go mod tidy -go=1.22 && git diff --exit-code -- go.mod go.sum && go test ./... && go vet ./... && go build ./cmd/tensuns'
+```
+
+CI should run the identical four Go commands on a pinned Go 1.22 runner. It
+must fail if `go mod tidy -go=1.22` changes `go.mod` or `go.sum`; this catches
+an accidental SDK upgrade that raises the minimum toolchain version.
+
 ## Authenticated identity check
 
 An authorized reviewer can verify the deployed identity contract without placing a password or token in source, shell history, logs, or issue comments:

@@ -2,6 +2,7 @@ package awscloud
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
 	"github.com/lianshenyi/TenSunS-go/internal/consulmock"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
+	"github.com/lianshenyi/TenSunS-go/internal/store"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
 	cloudsync "github.com/lianshenyi/TenSunS-go/internal/sync"
 )
@@ -28,16 +30,16 @@ func TestProviderUsesHTTPEndpointFixture(t *testing.T) {
 			_, _ = w.Write([]byte(`<DescribeInstancesResponse><reservationSet><item><instancesSet><item><instanceId>i-1</instanceId><privateIpAddress>10.0.0.1</privateIpAddress><instanceState><name>running</name></instanceState><tagSet><item><key>Name</key><value>web</value></item></tagSet></item></instancesSet></item></reservationSet><nextToken>more</nextToken></DescribeInstancesResponse>`))
 		case "DescribeDBInstances":
 			if r.Form.Get("Marker") == "more" {
-				_, _ = w.Write([]byte(`<DescribeDBInstancesResponse><DescribeDBInstancesResult><DBInstances><DBInstance><DBInstanceIdentifier>db-2</DBInstanceIdentifier><DBInstanceStatus>available</DBInstanceStatus><Engine>mysql</Engine><Endpoint><Address>db-2.local</Address><Port>3306</Port></Endpoint></DBInstance></DBInstances></DescribeDBInstancesResult></DescribeDBInstancesResponse>`))
+				_, _ = w.Write([]byte(`<DescribeDBInstancesResponse><DescribeDBInstancesResult><DBInstances><DBInstance><DBInstanceIdentifier>db-2</DBInstanceIdentifier><DBInstanceStatus>available</DBInstanceStatus><Engine>mysql</Engine><DBClusterIdentifier>cluster-2</DBClusterIdentifier><Endpoint><Address>db-2.local</Address><Port>3306</Port></Endpoint></DBInstance></DBInstances></DescribeDBInstancesResult></DescribeDBInstancesResponse>`))
 				return
 			}
-			_, _ = w.Write([]byte(`<DescribeDBInstancesResponse><DescribeDBInstancesResult><DBInstances><DBInstance><DBInstanceIdentifier>db-1</DBInstanceIdentifier><DBInstanceStatus>available</DBInstanceStatus><Engine>mysql</Engine><Endpoint><Address>db-1.local</Address><Port>3306</Port></Endpoint></DBInstance></DBInstances><Marker>more</Marker></DescribeDBInstancesResult></DescribeDBInstancesResponse>`))
+			_, _ = w.Write([]byte(`<DescribeDBInstancesResponse><DescribeDBInstancesResult><DBInstances><DBInstance><DBInstanceIdentifier>db-1</DBInstanceIdentifier><DBInstanceStatus>available</DBInstanceStatus><Engine>mysql</Engine><DBClusterIdentifier>cluster-1</DBClusterIdentifier><Endpoint><Address>db-1.local</Address><Port>3306</Port></Endpoint></DBInstance></DBInstances><Marker>more</Marker></DescribeDBInstancesResult></DescribeDBInstancesResponse>`))
 		case "DescribeCacheClusters":
 			if r.Form.Get("Marker") == "more" {
-				_, _ = w.Write([]byte(`<DescribeCacheClustersResponse><DescribeCacheClustersResult><CacheClusters><CacheCluster><CacheClusterId>cache-2</CacheClusterId><Engine>redis</Engine><CacheClusterStatus>available</CacheClusterStatus></CacheCluster></CacheClusters></DescribeCacheClustersResult></DescribeCacheClustersResponse>`))
+				_, _ = w.Write([]byte(`<DescribeCacheClustersResponse><DescribeCacheClustersResult><CacheClusters><CacheCluster><CacheClusterId>cache-2</CacheClusterId><Engine>redis</Engine><CacheClusterStatus>available</CacheClusterStatus><ReplicationGroupId>rep-2</ReplicationGroupId><CacheNodes><CacheNode><Endpoint><Address>cache-2.local</Address><Port>6379</Port></Endpoint></CacheNode></CacheNodes></CacheCluster></CacheClusters></DescribeCacheClustersResult></DescribeCacheClustersResponse>`))
 				return
 			}
-			_, _ = w.Write([]byte(`<DescribeCacheClustersResponse><DescribeCacheClustersResult><CacheClusters><CacheCluster><CacheClusterId>cache-1</CacheClusterId><Engine>redis</Engine><CacheClusterStatus>available</CacheClusterStatus></CacheCluster></CacheClusters><Marker>more</Marker></DescribeCacheClustersResult></DescribeCacheClustersResponse>`))
+			_, _ = w.Write([]byte(`<DescribeCacheClustersResponse><DescribeCacheClustersResult><CacheClusters><CacheCluster><CacheClusterId>cache-1</CacheClusterId><Engine>redis</Engine><CacheClusterStatus>available</CacheClusterStatus><ReplicationGroupId>rep-1</ReplicationGroupId><CacheNodes><CacheNode><Endpoint><Address>cache-1.local</Address><Port>6379</Port></Endpoint></CacheNode></CacheNodes></CacheCluster></CacheClusters><Marker>more</Marker></DescribeCacheClustersResult></DescribeCacheClustersResponse>`))
 		default:
 			t.Fatalf("unexpected AWS action %q", r.Form.Get("Action"))
 		}
@@ -84,6 +86,22 @@ func assertProviderWritesConsul(t *testing.T, provider *Provider) {
 			t.Fatalf("%s record missing", kind)
 		}
 	}
+	client := consul.New(server.URL+"/v1", "", server.Client())
+	services, err := client.Services(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertService(t, services, "i-1", "awscloud_main_ecs", "10.0.0.1", 9100, "无")
+	assertService(t, services, "db-1", "awscloud_main_rds", "db-1.local", 3306, "cluster-1")
+	assertService(t, services, "cache-1", "awscloud_main_redis", "cache-1.local", 6379, "rep-1")
+}
+
+func assertService(t *testing.T, services map[string]store.Service, id, name, address string, port int, group string) {
+	t.Helper()
+	service, found := services[id]
+	if !found || service.Name != name || service.Address != address || service.Port != port || service.Meta["group"] != group {
+		t.Fatalf("service %s = %#v", id, service)
+	}
 }
 
 func TestProviderReturnsEndpointErrors(t *testing.T) {
@@ -102,6 +120,25 @@ func TestProviderReturnsEndpointErrors(t *testing.T) {
 				t.Fatal("expected endpoint error")
 			}
 		})
+	}
+	mock := consulmock.New()
+	server := httptest.NewServer(mock.Handler())
+	defer server.Close()
+	registry := cloud.NewRegistry()
+	registry.Register("awscloud", p)
+	svc := cloudsync.New(consul.New(server.URL+"/v1", "", server.Client()), registry)
+	if err := svc.ECS(context.Background(), "awscloud", "main", "us-east-1", false); err == nil {
+		t.Fatal("expected endpoint error")
+	}
+	assertFailureRecord(t, mock, "ConsulManager/record/jobs/awscloud/main/ecs/us-east-1")
+}
+
+func assertFailureRecord(t *testing.T, mock *consulmock.Server, path string) {
+	t.Helper()
+	var record map[string]any
+	raw, found := mock.GetKV(path)
+	if !found || json.Unmarshal(raw, &record) != nil || record["status"] != float64(50000) {
+		t.Fatalf("failure record = %s", raw)
 	}
 }
 

@@ -2,6 +2,7 @@ package huawei
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
 	"github.com/lianshenyi/TenSunS-go/internal/consulmock"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
+	"github.com/lianshenyi/TenSunS-go/internal/store"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
 	cloudsync "github.com/lianshenyi/TenSunS-go/internal/sync"
 )
@@ -89,6 +91,33 @@ func assertProviderWritesConsul(t *testing.T, provider *Provider) {
 			t.Fatalf("%s record missing", kind)
 		}
 	}
+	client := consul.New(server.URL+"/v1", "", server.Client())
+	services, err := client.Services(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertService(t, services, "srv-1", "huaweicloud_main_ecs", "10.0.0.1", 9100, "production")
+	assertService(t, services, "rds-1", "huaweicloud_main_rds", "10.0.0.2", 3306, "production")
+	assertService(t, services, "redis-1", "huaweicloud_main_redis", "redis.local", 6379, "production")
+
+	missingGroups := consulmock.New()
+	missingServer := httptest.NewServer(missingGroups.Handler())
+	defer missingServer.Close()
+	missingRegistry := cloud.NewRegistry()
+	missingRegistry.Register("huaweicloud", provider)
+	missingSync := cloudsync.New(consul.New(missingServer.URL+"/v1", "", missingServer.Client()), missingRegistry)
+	if err := missingSync.ECS(context.Background(), "huaweicloud", "main", "cn-north-4", false); err == nil {
+		t.Fatal("Huawei ECS unexpectedly succeeded without group mapping")
+	}
+	assertFailureRecord(t, missingGroups, "ConsulManager/record/jobs/huaweicloud/main/ecs/cn-north-4")
+}
+
+func assertService(t *testing.T, services map[string]store.Service, id, name, address string, port int, group string) {
+	t.Helper()
+	service, found := services[id]
+	if !found || service.Name != name || service.Address != address || service.Port != port || service.Meta["group"] != group {
+		t.Fatalf("service %s = %#v", id, service)
+	}
 }
 
 func TestProviderReturnsEndpointErrors(t *testing.T) {
@@ -108,6 +137,25 @@ func TestProviderReturnsEndpointErrors(t *testing.T) {
 				t.Fatal("expected endpoint error")
 			}
 		})
+	}
+	mock := consulmock.New()
+	server := httptest.NewServer(mock.Handler())
+	defer server.Close()
+	registry := cloud.NewRegistry()
+	registry.Register("huaweicloud", p)
+	svc := cloudsync.New(consul.New(server.URL+"/v1", "", server.Client()), registry)
+	if err := svc.ECS(context.Background(), "huaweicloud", "main", "cn-north-4", false); err == nil {
+		t.Fatal("expected endpoint error")
+	}
+	assertFailureRecord(t, mock, "ConsulManager/record/jobs/huaweicloud/main/ecs/cn-north-4")
+}
+
+func assertFailureRecord(t *testing.T, mock *consulmock.Server, path string) {
+	t.Helper()
+	var record map[string]any
+	raw, found := mock.GetKV(path)
+	if !found || json.Unmarshal(raw, &record) != nil || record["status"] != float64(50000) {
+		t.Fatalf("failure record = %s", raw)
 	}
 }
 

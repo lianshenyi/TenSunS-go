@@ -83,54 +83,18 @@ func TestECSFailsAndRecordsWhenGroupMappingIsMissing(t *testing.T) {
 	}
 }
 
-func TestAllProviderResourceKindsWriteConsul(t *testing.T) {
-	for _, vendor := range []string{"awscloud", "tencent_cloud", "huaweicloud"} {
-		t.Run(vendor, func(t *testing.T) {
-			mock := consulmock.New()
-			if vendor != "awscloud" {
-				if err := mock.SetKV("ConsulManager/assets/"+vendor+"/group/main", map[string]string{"1": "production"}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			server := httptest.NewServer(mock.Handler())
-			defer server.Close()
-			registry := cloud.NewRegistry()
-			registry.Register(vendor, fakeProvider{
-				ecs:   map[string]model.ECS{"ecs-1": {Name: "web", Group: groupFor(vendor), OSType: "linux", Status: "RUNNING", IP: "10.0.0.1", CPU: "1核", Mem: "1GB", Exp: "按量"}},
-				rds:   map[string]model.RDS{"rds-1": {Name: "db", Group: groupFor(vendor), Status: "运行中", IP: "10.0.0.2", Port: 3306, IType: "mysql", Ver: "8", Exp: "按量"}},
-				redis: map[string]model.Redis{"redis-1": {Name: "cache", Group: groupFor(vendor), Status: "运行中", Domain: "10.0.0.3", IP: "10.0.0.3", Port: 6379, IType: "redis", Ver: "7", Exp: "按量"}},
-			})
-			svc := New(consul.New(server.URL+"/v1", "", server.Client()), registry)
-			if err := svc.Group(context.Background(), vendor, "main"); err != nil {
-				t.Fatal(err)
-			}
-			// Non-AWS fixtures deliberately exercise the persisted group lookup.
-			if vendor != "awscloud" {
-				if err := mock.SetKV("ConsulManager/assets/"+vendor+"/group/main", map[string]string{"1": "production"}); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := svc.ECS(context.Background(), vendor, "main", "test-1", false); err != nil {
-				t.Fatal(err)
-			}
-			if err := svc.RDS(context.Background(), vendor, "main", "test-1"); err != nil {
-				t.Fatal(err)
-			}
-			if err := svc.Redis(context.Background(), vendor, "main", "test-1"); err != nil {
-				t.Fatal(err)
-			}
-			for _, kind := range []string{"ecs", "rds", "redis"} {
-				if _, found := mock.GetKV("ConsulManager/record/jobs/" + vendor + "/main/" + kind + "/test-1"); !found {
-					t.Fatalf("%s record missing", kind)
-				}
-			}
-		})
+func TestTencentMissingGroupFallsBackToNone(t *testing.T) {
+	mock := consulmock.New()
+	server := httptest.NewServer(mock.Handler())
+	defer server.Close()
+	registry := cloud.NewRegistry()
+	registry.Register("tencent_cloud", fakeProvider{ecs: map[string]model.ECS{"ins-1": {Name: "web", Group: "missing", OSType: "linux", Status: "RUNNING", IP: "10.0.0.1"}}})
+	svc := New(consul.New(server.URL+"/v1", "", server.Client()), registry)
+	if err := svc.ECS(context.Background(), "tencent_cloud", "main", "ap-guangzhou", false); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func groupFor(vendor string) string {
-	if vendor == "awscloud" {
-		return "无"
+	services, err := consul.New(server.URL+"/v1", "", server.Client()).Services(context.Background(), `ID == "ins-1"`)
+	if err != nil || services["ins-1"].Meta["group"] != "无" {
+		t.Fatalf("Tencent missing group = %#v, %v", services, err)
 	}
-	return "1"
 }

@@ -97,9 +97,9 @@ func (s *Sync) Redis(ctx context.Context, vendor, account, region string) error 
 	return s.failure(ctx, vendor, account, "redis", region, err)
 }
 
-// resolveGroups translates vendor resource-group IDs only for providers whose
-// legacy contract stores IDs in resource responses.  A missing mapping is a
-// failed resource sync: silently publishing an ID breaks the UI/JMS contract.
+// resolveGroups translates resource-group IDs using the persisted group task
+// output. The Python contract falls back to "无" for every provider except
+// Huawei ECS, where a missing enterprise-project mapping aborts the sync.
 func (s *Sync) resolveGroups(ctx context.Context, vendor, account string) (map[string]string, error) {
 	if vendor != "tencent_cloud" && vendor != "huaweicloud" {
 		return nil, nil
@@ -110,7 +110,7 @@ func (s *Sync) resolveGroups(ctx context.Context, vendor, account string) (map[s
 		return nil, fmt.Errorf("read %s resource groups: %w", vendor, err)
 	}
 	if !found {
-		return nil, fmt.Errorf("%s resource groups for account %q are missing; run group sync first", vendor, account)
+		return groups, nil
 	}
 	return groups, nil
 }
@@ -122,8 +122,11 @@ func (s *Sync) resolveECSGroups(ctx context.Context, vendor, account string, res
 	}
 	for id, resource := range resources {
 		name, ok := groups[resource.Group]
-		if !ok {
+		if !ok && vendor == "huaweicloud" {
 			return fmt.Errorf("resource group %q for ECS %q is missing", resource.Group, id)
+		}
+		if !ok {
+			name = "无"
 		}
 		resource.Group = name
 		resources[id] = resource
@@ -136,9 +139,9 @@ func (s *Sync) resolveRDSGroups(ctx context.Context, vendor, account string, res
 		return err
 	}
 	for id, resource := range resources {
-		name, ok := groups[resource.Group]
-		if !ok {
-			return fmt.Errorf("resource group %q for RDS %q is missing", resource.Group, id)
+		name := groups[resource.Group]
+		if name == "" {
+			name = "无"
 		}
 		resource.Group = name
 		resources[id] = resource
@@ -151,9 +154,9 @@ func (s *Sync) resolveRedisGroups(ctx context.Context, vendor, account string, r
 		return err
 	}
 	for id, resource := range resources {
-		name, ok := groups[resource.Group]
-		if !ok {
-			return fmt.Errorf("resource group %q for Redis %q is missing", resource.Group, id)
+		name := groups[resource.Group]
+		if name == "" {
+			name = "无"
 		}
 		resource.Group = name
 		resources[id] = resource
