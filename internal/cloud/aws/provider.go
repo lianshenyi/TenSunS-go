@@ -29,7 +29,11 @@ type cacheAPI interface {
 
 // Provider uses a resolver to keep long-lived cloud clients from retaining
 // plaintext secrets between scheduler runs.
-type Provider struct{ Secrets cloud.SecretResolver }
+type Provider struct {
+	Secrets cloud.SecretResolver
+	// Endpoint overrides AWS service endpoints in tests. Production leaves it empty.
+	Endpoint string
+}
 
 func New(secrets cloud.SecretResolver) *Provider { return &Provider{Secrets: secrets} }
 
@@ -42,34 +46,41 @@ func (p *Provider) ECS(ctx context.Context, account, region string, externalIP b
 	if err != nil {
 		return nil, err
 	}
-	response, err := ec2client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{})
-	if err != nil {
-		return nil, fmt.Errorf("AWS EC2 DescribeInstances: %w", err)
-	}
 	out := map[string]model.ECS{}
-	for _, reservation := range response.Reservations {
-		for _, instance := range reservation.Instances {
-			id := aws.ToString(instance.InstanceId)
-			if id == "" {
-				continue
-			}
-			name := id
-			for _, tag := range instance.Tags {
-				if aws.ToString(tag.Key) == "Name" {
-					name = aws.ToString(tag.Value)
-					break
-				}
-			}
-			ip := aws.ToString(instance.PrivateIpAddress)
-			if externalIP {
-				ip = aws.ToString(instance.PublicIpAddress)
-			}
-			cpu := int32(0)
-			if instance.CpuOptions != nil {
-				cpu = aws.ToInt32(instance.CpuOptions.CoreCount) * aws.ToInt32(instance.CpuOptions.ThreadsPerCore)
-			}
-			out[id] = model.ECS{Name: name, Group: "无", OSType: osType(aws.ToString(instance.PlatformDetails)), Status: string(instance.State.Name), Region: region, IP: ip, CPU: fmt.Sprintf("%d核", cpu), Mem: "0", Exp: "按量"}
+	var next *string
+	for {
+		response, err := ec2client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{NextToken: next})
+		if err != nil {
+			return nil, fmt.Errorf("AWS EC2 DescribeInstances: %w", err)
 		}
+		for _, reservation := range response.Reservations {
+			for _, instance := range reservation.Instances {
+				id := aws.ToString(instance.InstanceId)
+				if id == "" {
+					continue
+				}
+				name := id
+				for _, tag := range instance.Tags {
+					if aws.ToString(tag.Key) == "Name" {
+						name = aws.ToString(tag.Value)
+						break
+					}
+				}
+				ip := aws.ToString(instance.PrivateIpAddress)
+				if externalIP {
+					ip = aws.ToString(instance.PublicIpAddress)
+				}
+				cpu := int32(0)
+				if instance.CpuOptions != nil {
+					cpu = aws.ToInt32(instance.CpuOptions.CoreCount) * aws.ToInt32(instance.CpuOptions.ThreadsPerCore)
+				}
+				out[id] = model.ECS{Name: name, Group: "无", OSType: osType(aws.ToString(instance.PlatformDetails)), Status: string(instance.State.Name), Region: region, IP: ip, CPU: fmt.Sprintf("%d核", cpu), Mem: "0", Exp: "按量"}
+			}
+		}
+		if aws.ToString(response.NextToken) == "" {
+			break
+		}
+		next = response.NextToken
 	}
 	return out, nil
 }
@@ -79,18 +90,25 @@ func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	response, err := rdsclient.DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{})
-	if err != nil {
-		return nil, fmt.Errorf("AWS RDS DescribeDBInstances: %w", err)
-	}
-	out := make(map[string]model.RDS, len(response.DBInstances))
-	for _, instance := range response.DBInstances {
-		id := aws.ToString(instance.DBInstanceIdentifier)
-		if id == "" || instance.Endpoint == nil {
-			continue
+	out := map[string]model.RDS{}
+	var marker *string
+	for {
+		response, err := rdsclient.DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{Marker: marker})
+		if err != nil {
+			return nil, fmt.Errorf("AWS RDS DescribeDBInstances: %w", err)
 		}
-		domain := aws.ToString(instance.Endpoint.Address)
-		out[id] = model.RDS{Name: id, Domain: domain, IP: domain, Port: int(aws.ToInt32(instance.Endpoint.Port)), Region: region, Group: aws.ToString(instance.DBClusterIdentifier), Status: aws.ToString(instance.DBInstanceStatus), IType: aws.ToString(instance.Engine), Ver: aws.ToString(instance.EngineVersion), Exp: "按量", CPU: "0", Mem: "0", Disk: "0"}
+		for _, instance := range response.DBInstances {
+			id := aws.ToString(instance.DBInstanceIdentifier)
+			if id == "" || instance.Endpoint == nil {
+				continue
+			}
+			domain := aws.ToString(instance.Endpoint.Address)
+			out[id] = model.RDS{Name: id, Domain: domain, IP: domain, Port: int(aws.ToInt32(instance.Endpoint.Port)), Region: region, Group: aws.ToString(instance.DBClusterIdentifier), Status: aws.ToString(instance.DBInstanceStatus), IType: aws.ToString(instance.Engine), Ver: aws.ToString(instance.EngineVersion), Exp: "按量", CPU: "0", Mem: "0", Disk: "0"}
+		}
+		if aws.ToString(response.Marker) == "" {
+			break
+		}
+		marker = response.Marker
 	}
 	return out, nil
 }
@@ -100,21 +118,28 @@ func (p *Provider) Redis(ctx context.Context, account, region string) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	response, err := cacheclient.DescribeCacheClusters(ctx, &elasticache.DescribeCacheClustersInput{ShowCacheNodeInfo: aws.Bool(true)})
-	if err != nil {
-		return nil, fmt.Errorf("AWS ElastiCache DescribeCacheClusters: %w", err)
-	}
-	out := make(map[string]model.Redis, len(response.CacheClusters))
-	for _, cluster := range response.CacheClusters {
-		id := aws.ToString(cluster.CacheClusterId)
-		if id == "" {
-			continue
+	out := map[string]model.Redis{}
+	var marker *string
+	for {
+		response, err := cacheclient.DescribeCacheClusters(ctx, &elasticache.DescribeCacheClustersInput{ShowCacheNodeInfo: aws.Bool(true), Marker: marker})
+		if err != nil {
+			return nil, fmt.Errorf("AWS ElastiCache DescribeCacheClusters: %w", err)
 		}
-		ip := ""
-		if len(cluster.CacheNodes) > 0 && cluster.CacheNodes[0].Endpoint != nil {
-			ip = aws.ToString(cluster.CacheNodes[0].Endpoint.Address)
+		for _, cluster := range response.CacheClusters {
+			id := aws.ToString(cluster.CacheClusterId)
+			if id == "" {
+				continue
+			}
+			ip := ""
+			if len(cluster.CacheNodes) > 0 && cluster.CacheNodes[0].Endpoint != nil {
+				ip = aws.ToString(cluster.CacheNodes[0].Endpoint.Address)
+			}
+			out[id] = model.Redis{Name: id, Domain: ip, IP: ip, Port: 6379, Region: region, Group: aws.ToString(cluster.ReplicationGroupId), Status: aws.ToString(cluster.CacheClusterStatus), IType: aws.ToString(cluster.Engine), Ver: aws.ToString(cluster.EngineVersion), Mem: "0", Exp: "按量"}
 		}
-		out[id] = model.Redis{Name: id, Domain: ip, IP: ip, Port: 6379, Region: region, Group: aws.ToString(cluster.ReplicationGroupId), Status: aws.ToString(cluster.CacheClusterStatus), IType: aws.ToString(cluster.Engine), Ver: aws.ToString(cluster.EngineVersion), Mem: "0", Exp: "按量"}
+		if aws.ToString(response.Marker) == "" {
+			break
+		}
+		marker = response.Marker
 	}
 	return out, nil
 }
@@ -132,7 +157,22 @@ func (p *Provider) allClients(ctx context.Context, account, region string) (*ec2
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("configure AWS SDK: %w", err)
 	}
-	return ec2.NewFromConfig(cfg), rds.NewFromConfig(cfg), elasticache.NewFromConfig(cfg), nil
+	ec2Options := func(o *ec2.Options) {
+		if p.Endpoint != "" {
+			o.BaseEndpoint = aws.String(p.Endpoint)
+		}
+	}
+	rdsOptions := func(o *rds.Options) {
+		if p.Endpoint != "" {
+			o.BaseEndpoint = aws.String(p.Endpoint)
+		}
+	}
+	cacheOptions := func(o *elasticache.Options) {
+		if p.Endpoint != "" {
+			o.BaseEndpoint = aws.String(p.Endpoint)
+		}
+	}
+	return ec2.NewFromConfig(cfg, ec2Options), rds.NewFromConfig(cfg, rdsOptions), elasticache.NewFromConfig(cfg, cacheOptions), nil
 }
 func osType(value string) string {
 	if strings.Contains(strings.ToLower(value), "win") {

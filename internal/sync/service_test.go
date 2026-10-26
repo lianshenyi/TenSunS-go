@@ -13,7 +13,11 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
 )
 
-type fakeProvider struct{ ecs map[string]model.ECS }
+type fakeProvider struct {
+	ecs   map[string]model.ECS
+	rds   map[string]model.RDS
+	redis map[string]model.Redis
+}
 
 func (p fakeProvider) Group(context.Context, string) (map[string]string, error) {
 	return map[string]string{"1": "project"}, nil
@@ -21,11 +25,11 @@ func (p fakeProvider) Group(context.Context, string) (map[string]string, error) 
 func (p fakeProvider) ECS(context.Context, string, string, bool) (map[string]model.ECS, error) {
 	return p.ecs, nil
 }
-func (fakeProvider) RDS(context.Context, string, string) (map[string]model.RDS, error) {
-	return map[string]model.RDS{}, nil
+func (p fakeProvider) RDS(context.Context, string, string) (map[string]model.RDS, error) {
+	return p.rds, nil
 }
-func (fakeProvider) Redis(context.Context, string, string) (map[string]model.Redis, error) {
-	return map[string]model.Redis{}, nil
+func (p fakeProvider) Redis(context.Context, string, string) (map[string]model.Redis, error) {
+	return p.redis, nil
 }
 
 func TestECSWritesServicesCleansStaleAndRecords(t *testing.T) {
@@ -77,4 +81,56 @@ func TestECSFailsAndRecordsWhenGroupMappingIsMissing(t *testing.T) {
 	if !found || json.Unmarshal(raw, &record) != nil || record["status"] != float64(50000) {
 		t.Fatalf("failure record = %s", raw)
 	}
+}
+
+func TestAllProviderResourceKindsWriteConsul(t *testing.T) {
+	for _, vendor := range []string{"awscloud", "tencent_cloud", "huaweicloud"} {
+		t.Run(vendor, func(t *testing.T) {
+			mock := consulmock.New()
+			if vendor != "awscloud" {
+				if err := mock.SetKV("ConsulManager/assets/"+vendor+"/group/main", map[string]string{"1": "production"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			server := httptest.NewServer(mock.Handler())
+			defer server.Close()
+			registry := cloud.NewRegistry()
+			registry.Register(vendor, fakeProvider{
+				ecs:   map[string]model.ECS{"ecs-1": {Name: "web", Group: groupFor(vendor), OSType: "linux", Status: "RUNNING", IP: "10.0.0.1", CPU: "1核", Mem: "1GB", Exp: "按量"}},
+				rds:   map[string]model.RDS{"rds-1": {Name: "db", Group: groupFor(vendor), Status: "运行中", IP: "10.0.0.2", Port: 3306, IType: "mysql", Ver: "8", Exp: "按量"}},
+				redis: map[string]model.Redis{"redis-1": {Name: "cache", Group: groupFor(vendor), Status: "运行中", Domain: "10.0.0.3", IP: "10.0.0.3", Port: 6379, IType: "redis", Ver: "7", Exp: "按量"}},
+			})
+			svc := New(consul.New(server.URL+"/v1", "", server.Client()), registry)
+			if err := svc.Group(context.Background(), vendor, "main"); err != nil {
+				t.Fatal(err)
+			}
+			// Non-AWS fixtures deliberately exercise the persisted group lookup.
+			if vendor != "awscloud" {
+				if err := mock.SetKV("ConsulManager/assets/"+vendor+"/group/main", map[string]string{"1": "production"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := svc.ECS(context.Background(), vendor, "main", "test-1", false); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.RDS(context.Background(), vendor, "main", "test-1"); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.Redis(context.Background(), vendor, "main", "test-1"); err != nil {
+				t.Fatal(err)
+			}
+			for _, kind := range []string{"ecs", "rds", "redis"} {
+				if _, found := mock.GetKV("ConsulManager/record/jobs/" + vendor + "/main/" + kind + "/test-1"); !found {
+					t.Fatalf("%s record missing", kind)
+				}
+			}
+		})
+	}
+}
+
+func groupFor(vendor string) string {
+	if vendor == "awscloud" {
+		return "无"
+	}
+	return "1"
 }
