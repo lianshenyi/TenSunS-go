@@ -31,7 +31,7 @@ Use a local Consul only. Do not put cloud credentials, JumpServer tokens, or pro
 
 The production binary registers `alicloud`, `tencent_cloud`, `huaweicloud`, and `awscloud`. AK/SK are decrypted only in process memory for an SDK client and must never be copied into logs, responses, tests, or shell history. No cloud write API is called.
 
-The allowed calls are Alibaba Resource Manager `ListResourceGroups`; Tencent DCDB/CVM/CDB/Redis `Describe*`; Huawei EPS/ECS/RDS/DCS `List*`; and AWS EC2/RDS/ElastiCache `Describe*`. AWS has no resource-group API and uses its legacy fixed group `1`. Alibaba ECS/RDS/Redis remain unsupported and intentionally write a per-task failure record.
+The allowed calls are Alibaba Resource Manager `ListResourceGroups`, ECS `DescribeInstances`, RDS `DescribeDBInstances` (MySQL only), and R-KVStore `DescribeInstances`; Tencent DCDB/CVM/CDB/Redis `Describe*`; Huawei EPS/ECS/RDS/DCS `List*`; and AWS EC2/RDS/ElastiCache `Describe*`. AWS has no resource-group API and uses its legacy fixed group `1`. Alibaba pagination is enabled (ECS/RDS token, Redis page number), and the sync layer converts stored resource-group IDs to display names before writing Consul Services.
 
 Credential or cloud API failures return `50000`; their group failure record is written, but no task KV is created. A resource-job failure writes only its own failure record and does not stop other scheduled jobs. Unit and HTTP flow tests run with:
 

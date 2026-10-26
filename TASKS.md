@@ -31,3 +31,10 @@
 - [x] 接入并注册腾讯云、华为云、AWS Provider 的只读 group/ECS/RDS/Redis API；AWS group 固定映射。
 - [x] 补凭据脱敏、Provider 单元、同步组合、调度路由与连续失败保护测试。
 - [x] 更新 RUNBOOK，完成本地审查、推送 `main`、部署 `10.0.10.236` 并冒烟；真实凭据仅经应用流程验证。
+
+## Phase 5：阿里云资源只读执行（方案 A）
+
+- [x] 确认范围：阿里云 ECS、RDS（MySQL）、Redis 仅使用 Describe/List API。
+- [x] 引入阿里云 ECS/RDS/R-KVStore 官方 SDK，补齐区域 endpoint、分页、状态、地址和资源组 ID 映射。
+- [x] 覆盖三类 Provider 的映射、分页、取消和错误脱敏；保留 sync/job/HTTP 的失败隔离组合回归。
+- [ ] 完成本地全量验证、审查、推送 `main` 并在 `10.0.10.236` 验证三类任务 record 与回滚点。

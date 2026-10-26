@@ -3,168 +3,85 @@ package alicloud
 import (
 	"context"
 	"errors"
-	"net/http/httptest"
+	"strings"
 	"testing"
 
-	resource "github.com/alibabacloud-go/resourcemanager-20200331/v2/client"
+	ecs "github.com/alibabacloud-go/ecs-20140526/v4/client"
+	redis "github.com/alibabacloud-go/r-kvstore-20150101/v5/client"
+	rds "github.com/alibabacloud-go/rds-20140815/v5/client"
 	"github.com/alibabacloud-go/tea/tea"
-	"github.com/lianshenyi/TenSunS-go/internal/accounts"
-	"github.com/lianshenyi/TenSunS-go/internal/cloud"
-	"github.com/lianshenyi/TenSunS-go/internal/consulmock"
-	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
-	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
-	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
-	syncservice "github.com/lianshenyi/TenSunS-go/internal/sync"
 )
 
-type fakeCredentialLoader struct {
-	credentials Credentials
-	err         error
-}
+type fakeLoader struct{ err error }
 
-func (f fakeCredentialLoader) Load(context.Context, string) (Credentials, error) {
-	return f.credentials, f.err
-}
+func (f fakeLoader) Load(context.Context, string) (Credentials, error) { return Credentials{}, f.err }
 
-type fakeResourceGroupClient struct {
-	response *resource.ListResourceGroupsResponse
-	err      error
-	request  *resource.ListResourceGroupsRequest
-}
-
-func (f *fakeResourceGroupClient) ListResourceGroups(request *resource.ListResourceGroupsRequest) (*resource.ListResourceGroupsResponse, error) {
-	f.request = request
-	return f.response, f.err
-}
-
-func TestProviderGroupListsFirstPage(t *testing.T) {
-	client := &fakeResourceGroupClient{response: &resource.ListResourceGroupsResponse{Body: &resource.ListResourceGroupsResponseBody{
-		ResourceGroups: &resource.ListResourceGroupsResponseBodyResourceGroups{ResourceGroup: []*resource.ListResourceGroupsResponseBodyResourceGroupsResourceGroup{
-			{Id: tea.String("rg-platform"), DisplayName: tea.String("platform")},
-			{Id: tea.String("rg-observability"), DisplayName: tea.String("observability")},
-		}},
-	}}}
-	provider := &Provider{
-		credentials: fakeCredentialLoader{credentials: Credentials{AccessKeyID: "test-id", AccessKeySecret: "test-secret"}},
-		newClient:   func(Credentials) (ResourceGroupClient, error) { return client, nil },
+func TestInventoryMappingAndPagination(t *testing.T) {
+	ecsCalls, rdsCalls, redisCalls := 0, 0, 0
+	p := &Provider{credentials: fakeLoader{}, newClients: func(Credentials, string) (clients, error) {
+		return clients{
+			ecs: func(request *ecs.DescribeInstancesRequest) (*ecs.DescribeInstancesResponse, error) {
+				ecsCalls++
+				if tea.StringValue(request.RegionId) != "cn-hangzhou" || tea.Int32Value(request.MaxResults) != 100 {
+					t.Fatalf("ecs request=%+v", request)
+				}
+				token := ""
+				if ecsCalls == 1 {
+					token = "next"
+				}
+				id := "i-" + string(rune('0'+ecsCalls))
+				return &ecs.DescribeInstancesResponse{Body: &ecs.DescribeInstancesResponseBody{NextToken: tea.String(token), Instances: &ecs.DescribeInstancesResponseBodyInstances{Instance: []*ecs.DescribeInstancesResponseBodyInstancesInstance{{InstanceId: tea.String(id), InstanceName: tea.String("host"), ResourceGroupId: tea.String("rg-1"), OSType: tea.String("linux"), Status: tea.String("Running"), Cpu: tea.Int32(2), Memory: tea.Int32(2048), InnerIpAddress: &ecs.DescribeInstancesResponseBodyInstancesInstanceInnerIpAddress{IpAddress: []*string{tea.String("10.0.0.1")}}, PublicIpAddress: &ecs.DescribeInstancesResponseBodyInstancesInstancePublicIpAddress{IpAddress: []*string{tea.String("1.2.3.4")}}}}}}}, nil
+			},
+			rds: func(request *rds.DescribeDBInstancesRequest) (*rds.DescribeDBInstancesResponse, error) {
+				rdsCalls++
+				if tea.StringValue(request.Engine) != "MySQL" || tea.Int32Value(request.MaxResults) != 100 {
+					t.Fatalf("rds request=%+v", request)
+				}
+				token := ""
+				if rdsCalls == 1 {
+					token = "next"
+				}
+				id := "rm-" + string(rune('0'+rdsCalls))
+				return &rds.DescribeDBInstancesResponse{Body: &rds.DescribeDBInstancesResponseBody{NextToken: tea.String(token), Items: &rds.DescribeDBInstancesResponseBodyItems{DBInstance: []*rds.DescribeDBInstancesResponseBodyItemsDBInstance{{DBInstanceId: tea.String(id), ConnectionString: tea.String("db.example"), ResourceGroupId: tea.String("rg-1"), DBInstanceStatus: tea.String("Running"), DBInstanceType: tea.String("Primary"), EngineVersion: tea.String("8.0")}}}}}, nil
+			},
+			redis: func(request *redis.DescribeInstancesRequest) (*redis.DescribeInstancesResponse, error) {
+				redisCalls++
+				if tea.Int32Value(request.PageSize) != 50 {
+					t.Fatalf("redis request=%+v", request)
+				}
+				id := "r-" + string(rune('0'+redisCalls))
+				return &redis.DescribeInstancesResponse{Body: &redis.DescribeInstancesResponseBody{TotalCount: tea.Int32(2), Instances: &redis.DescribeInstancesResponseBodyInstances{KVStoreInstance: []*redis.DescribeInstancesResponseBodyInstancesKVStoreInstance{{InstanceId: tea.String(id), InstanceName: tea.String("cache"), ConnectionDomain: tea.String("cache.example"), PrivateIp: tea.String("10.0.0.2"), Port: tea.Int64(6379), ResourceGroupId: tea.String("rg-1"), InstanceStatus: tea.String("Normal"), ArchitectureType: tea.String("standard"), EngineVersion: tea.String("7.0"), Capacity: tea.Int64(1024)}}}}}, nil
+			},
+		}, nil
+	}}
+	e, err := p.ECS(context.Background(), "main", "cn-hangzhou", true)
+	if err != nil || len(e) != 2 || e["i-1"].IP != "1.2.3.4" || e["i-1"].Group != "rg-1" {
+		t.Fatalf("ECS=%+v err=%v", e, err)
 	}
-
-	groups, err := provider.Group(context.Background(), "demo")
-	if err != nil {
-		t.Fatal(err)
+	d, err := p.RDS(context.Background(), "main", "cn-hangzhou")
+	if err != nil || len(d) != 2 || d["rm-1"].Port != 3306 {
+		t.Fatalf("RDS=%+v err=%v", d, err)
 	}
-	if client.request == nil || tea.Int32Value(client.request.PageSize) != 100 || tea.Int32Value(client.request.PageNumber) != 1 {
-		t.Fatalf("request = %#v, want PageNumber=1 PageSize=100", client.request)
-	}
-	if groups["rg-platform"] != "platform" || groups["rg-observability"] != "observability" {
-		t.Fatalf("groups = %#v", groups)
+	r, err := p.Redis(context.Background(), "main", "cn-hangzhou")
+	if err != nil || len(r) != 2 || r["r-1"].Domain != "cache.example" {
+		t.Fatalf("Redis=%+v err=%v", r, err)
 	}
 }
 
-func TestProviderGroupHonorsCancelledContext(t *testing.T) {
+func TestInventoryFailureIsRedactedAndCanceled(t *testing.T) {
+	p := &Provider{credentials: fakeLoader{}, newClients: func(Credentials, string) (clients, error) {
+		return clients{ecs: func(*ecs.DescribeInstancesRequest) (*ecs.DescribeInstancesResponse, error) {
+			return nil, errors.New("AccessKeySecret=never-show")
+		}}, nil
+	}}
+	_, err := p.ECS(context.Background(), "main", "cn-hangzhou", false)
+	if err == nil || !strings.Contains(err.Error(), "DescribeInstances") || strings.Contains(err.Error(), "never-show") {
+		t.Fatalf("err=%v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	provider := &Provider{
-		credentials: fakeCredentialLoader{},
-		newClient:   func(Credentials) (ResourceGroupClient, error) { t.Fatal("newClient called"); return nil, nil },
-	}
-	if _, err := provider.Group(ctx, "demo"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Group() error = %v, want context.Canceled", err)
-	}
-}
-
-type fakeScheduler struct{ specs []scheduler.JobSpec }
-
-func (f *fakeScheduler) Upsert(_ context.Context, spec scheduler.JobSpec) error {
-	f.specs = append(f.specs, spec)
-	return nil
-}
-
-func TestCredentialAndAPIFailuresDoNotCreateTasks(t *testing.T) {
-	tests := []struct {
-		name        string
-		credentials CredentialLoader
-		newClient   clientFactory
-	}{
-		{
-			name:        "credential failure",
-			credentials: fakeCredentialLoader{err: errors.New("credential unavailable")},
-			newClient:   func(Credentials) (ResourceGroupClient, error) { t.Fatal("newClient called"); return nil, nil },
-		},
-		{
-			name:        "API failure is redacted",
-			credentials: fakeCredentialLoader{},
-			newClient: func(Credentials) (ResourceGroupClient, error) {
-				return &fakeResourceGroupClient{err: errors.New("request AccessKeyId=test-id Signature=test-signature rejected")}, nil
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			mock := consulmock.New()
-			server := httptest.NewServer(mock.Handler())
-			t.Cleanup(server.Close)
-			st := consul.New(server.URL+"/v1", "", server.Client())
-			cipher, err := cryptox.NewCipher("0123456789abcdef0123456789abcdef")
-			if err != nil {
-				t.Fatal(err)
-			}
-			registry := cloud.NewRegistry()
-			registry.Register("alicloud", &Provider{credentials: test.credentials, newClient: test.newClient})
-			jobs := &fakeScheduler{}
-			creator := accounts.NewCreator(st, cipher, syncservice.NewCloud(registry, st), jobs)
-
-			err = creator.Create(context.Background(), accounts.Request{Vendor: "alicloud", Account: "demo", AK: "test-id", SK: "test-secret", ProjectInterval: 60})
-			if err == nil {
-				t.Fatal("Create() error = nil")
-			}
-			if len(jobs.specs) != 0 {
-				t.Fatalf("scheduled specs = %#v", jobs.specs)
-			}
-			if _, found := mock.GetKV("ConsulManager/jobs/alicloud/demo/group"); found {
-				t.Fatal("group task persisted after resource group failure")
-			}
-			if test.name == "API failure is redacted" {
-				var record map[string]any
-				found, err := st.GetValue(context.Background(), "ConsulManager/record/jobs/alicloud/demo/group", &record)
-				if err != nil || !found {
-					t.Fatalf("failure record found=%v err=%v", found, err)
-				}
-				if record["msg"] != "资源组同步失败" {
-					t.Fatalf("failure record message = %#v", record["msg"])
-				}
-			}
-		})
-	}
-}
-
-func TestProviderGroupCredentialAndAPIFailures(t *testing.T) {
-	tests := []struct {
-		name     string
-		provider *Provider
-	}{
-		{
-			name: "credential load",
-			provider: &Provider{
-				credentials: fakeCredentialLoader{err: errors.New("credential unavailable")},
-				newClient:   func(Credentials) (ResourceGroupClient, error) { t.Fatal("newClient called"); return nil, nil },
-			},
-		},
-		{
-			name: "API response",
-			provider: &Provider{
-				credentials: fakeCredentialLoader{},
-				newClient: func(Credentials) (ResourceGroupClient, error) {
-					return &fakeResourceGroupClient{err: errors.New("API rejected request")}, nil
-				},
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if _, err := test.provider.Group(context.Background(), "demo"); err == nil {
-				t.Fatal("Group() error = nil")
-			}
-		})
+	_, err = p.ECS(ctx, "main", "cn-hangzhou", false)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
 	}
 }

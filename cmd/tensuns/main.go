@@ -129,11 +129,9 @@ func main() {
 	logger.Info("TenSunS Go backend stopped")
 }
 
-// logCloudCapabilities makes startup limitations explicit without implying that
-// resource-group providers are unavailable.
+// logCloudCapabilities records the registered read-only inventory adapters.
 func logCloudCapabilities(logger *slog.Logger, providers *cloud.Registry) {
-	logger.Info("resource group providers registered", "providers", providers.Vendors())
-	logger.Warn("Alibaba Cloud ECS, RDS, and Redis task execution is not implemented; those scheduled tasks will fail")
+	logger.Info("read-only cloud providers registered", "providers", providers.Vendors())
 }
 
 func newLogger(level string) *slog.Logger {

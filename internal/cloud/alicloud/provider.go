@@ -1,11 +1,17 @@
-// Package alicloud implements the read-only Alibaba Cloud resource-group adapter.
+// Package alicloud implements read-only Alibaba Cloud inventory adapters.
 package alicloud
 
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/client"
+	openapiv2 "github.com/alibabacloud-go/darabonba-openapi/v2/client"
+	ecs "github.com/alibabacloud-go/ecs-20140526/v4/client"
+	redis "github.com/alibabacloud-go/r-kvstore-20150101/v5/client"
+	rds "github.com/alibabacloud-go/rds-20140815/v5/client"
 	resource "github.com/alibabacloud-go/resourcemanager-20200331/v2/client"
 	"github.com/alibabacloud-go/tea/tea"
 
@@ -16,101 +22,245 @@ import (
 
 const credentialKeyPrefix = "ConsulManager/assets/alicloud/aksk/"
 
-// Credentials holds an account's decrypted credentials only while making an
-// Alibaba Cloud SDK request. It must never be logged or returned to callers.
-type Credentials struct {
-	AccessKeyID     string
-	AccessKeySecret string
-}
-
-// CredentialLoader gets account credentials from their secure source.
+// Credentials holds an account's decrypted credentials only while making an SDK request.
+type Credentials struct{ AccessKeyID, AccessKeySecret string }
 type CredentialLoader interface {
-	Load(ctx context.Context, account string) (Credentials, error)
+	Load(context.Context, string) (Credentials, error)
 }
 
-// ResourceGroupClient is the read-only subset of Alibaba Cloud's official SDK
-// used by this provider.
-type ResourceGroupClient interface {
-	ListResourceGroups(request *resource.ListResourceGroupsRequest) (*resource.ListResourceGroupsResponse, error)
+type clients struct {
+	groups func(*resource.ListResourceGroupsRequest) (*resource.ListResourceGroupsResponse, error)
+	ecs    func(*ecs.DescribeInstancesRequest) (*ecs.DescribeInstancesResponse, error)
+	rds    func(*rds.DescribeDBInstancesRequest) (*rds.DescribeDBInstancesResponse, error)
+	redis  func(*redis.DescribeInstancesRequest) (*redis.DescribeInstancesResponse, error)
 }
 
-type clientFactory func(Credentials) (ResourceGroupClient, error)
-
-// Provider lists Alibaba Cloud resource groups. ECS, RDS, and Redis remain
-// deliberately unavailable: this change is constrained to the group API.
+// Provider only issues List/Describe inventory calls; it never changes cloud resources.
 type Provider struct {
 	credentials CredentialLoader
-	newClient   clientFactory
+	newClients  func(Credentials, string) (clients, error)
 }
 
-// New creates a Provider which loads existing encrypted Consul credentials.
 func New(st store.Store, cipher *cryptox.Cipher) *Provider {
-	return &Provider{
-		credentials: credentialStore{store: st, cipher: cipher},
-		newClient:   newClient,
-	}
+	return &Provider{credentials: credentialStore{store: st, cipher: cipher}, newClients: sdkClients}
 }
 
-// Group returns Id-to-DisplayName mappings from Alibaba Cloud's read-only
-// ListResourceGroups API. The API request is limited to the first 100 rows to
-// preserve the behavior of the legacy implementation.
 func (p *Provider) Group(ctx context.Context, account string) (map[string]string, error) {
-	credentials, err := p.credentials.Load(ctx, account)
+	cs, err := p.clients(ctx, account, "")
 	if err != nil {
-		return nil, fmt.Errorf("load Alibaba Cloud credentials: %w", err)
+		return nil, err
+	}
+	response, err := cs.groups(&resource.ListResourceGroupsRequest{PageNumber: tea.Int32(1), PageSize: tea.Int32(100)})
+	if err != nil {
+		return nil, apiError{"ListResourceGroups"}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	client, err := p.newClient(credentials)
-	if err != nil {
-		return nil, fmt.Errorf("create Alibaba Cloud resource manager client: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	response, err := client.ListResourceGroups(&resource.ListResourceGroupsRequest{
-		PageNumber: tea.Int32(1),
-		PageSize:   tea.Int32(100),
-	})
-	if err != nil {
-		return nil, redactedAPIError{cause: err}
-	}
-
-	groups := make(map[string]string)
+	groups := map[string]string{}
 	if response == nil || response.Body == nil || response.Body.ResourceGroups == nil {
 		return groups, nil
 	}
-	for _, group := range response.Body.ResourceGroups.ResourceGroup {
-		if group == nil || tea.StringValue(group.Id) == "" {
-			continue
+	for _, item := range response.Body.ResourceGroups.ResourceGroup {
+		if item != nil && tea.StringValue(item.Id) != "" {
+			groups[tea.StringValue(item.Id)] = tea.StringValue(item.DisplayName)
 		}
-		groups[tea.StringValue(group.Id)] = tea.StringValue(group.DisplayName)
 	}
 	return groups, nil
 }
 
-// redactedAPIError keeps a provider error usable with errors.Is/As without
-// allowing a signed SDK request (and its credentials) into Consul records.
-type redactedAPIError struct{ cause error }
-
-func (e redactedAPIError) Error() string { return "Alibaba Cloud ListResourceGroups request failed" }
-
-func (e redactedAPIError) Unwrap() error { return e.cause }
-
-// ECS is outside the scope of the resource-group-only provider.
-func (*Provider) ECS(context.Context, string, string, bool) (map[string]model.ECS, error) {
-	return nil, fmt.Errorf("Alibaba Cloud ECS synchronization is not implemented")
+func (p *Provider) ECS(ctx context.Context, account, region string, externalIP bool) (map[string]model.ECS, error) {
+	cs, err := p.clients(ctx, account, region)
+	if err != nil {
+		return nil, err
+	}
+	out, token := map[string]model.ECS{}, ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		response, err := cs.ecs(&ecs.DescribeInstancesRequest{RegionId: tea.String(region), MaxResults: tea.Int32(100), NextToken: tea.String(token)})
+		if err != nil {
+			return nil, apiError{"DescribeInstances"}
+		}
+		if response == nil || response.Body == nil {
+			break
+		}
+		if response.Body.Instances != nil {
+			for _, item := range response.Body.Instances.Instance {
+				if item != nil && tea.StringValue(item.InstanceId) != "" {
+					out[tea.StringValue(item.InstanceId)] = normalizedECS(item, region, externalIP)
+				}
+			}
+		}
+		token = tea.StringValue(response.Body.NextToken)
+		if token == "" {
+			break
+		}
+	}
+	return out, nil
 }
 
-// RDS is outside the scope of the resource-group-only provider.
-func (*Provider) RDS(context.Context, string, string) (map[string]model.RDS, error) {
-	return nil, fmt.Errorf("Alibaba Cloud RDS synchronization is not implemented")
+func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]model.RDS, error) {
+	cs, err := p.clients(ctx, account, region)
+	if err != nil {
+		return nil, err
+	}
+	out, token := map[string]model.RDS{}, ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		response, err := cs.rds(&rds.DescribeDBInstancesRequest{RegionId: tea.String(region), Engine: tea.String("MySQL"), MaxResults: tea.Int32(100), NextToken: tea.String(token)})
+		if err != nil {
+			return nil, apiError{"DescribeDBInstances"}
+		}
+		if response == nil || response.Body == nil {
+			break
+		}
+		if response.Body.Items != nil {
+			for _, item := range response.Body.Items.DBInstance {
+				if item != nil && tea.StringValue(item.DBInstanceId) != "" {
+					id := tea.StringValue(item.DBInstanceId)
+					name := tea.StringValue(item.DBInstanceDescription)
+					if name == "" {
+						name = "未命名" + id
+					}
+					out[id] = model.RDS{Name: name, Domain: tea.StringValue(item.ConnectionString), IP: tea.StringValue(item.ConnectionString), Port: 3306, Region: region, Group: resourceGroup(tea.StringValue(item.ResourceGroupId)), Status: tea.StringValue(item.DBInstanceStatus), IType: tea.StringValue(item.DBInstanceType), Ver: tea.StringValue(item.EngineVersion), Exp: date(tea.StringValue(item.ExpireTime)), CPU: "无", Mem: "无", Disk: "无"}
+				}
+			}
+		}
+		token = tea.StringValue(response.Body.NextToken)
+		if token == "" {
+			break
+		}
+	}
+	return out, nil
 }
 
-// Redis is outside the scope of the resource-group-only provider.
-func (*Provider) Redis(context.Context, string, string) (map[string]model.Redis, error) {
-	return nil, fmt.Errorf("Alibaba Cloud Redis synchronization is not implemented")
+func (p *Provider) Redis(ctx context.Context, account, region string) (map[string]model.Redis, error) {
+	cs, err := p.clients(ctx, account, region)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]model.Redis{}
+	for page := int32(1); ; page++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		response, err := cs.redis(&redis.DescribeInstancesRequest{RegionId: tea.String(region), PageNumber: tea.Int32(page), PageSize: tea.Int32(50)})
+		if err != nil {
+			return nil, apiError{"DescribeInstances"}
+		}
+		if response == nil || response.Body == nil || response.Body.Instances == nil {
+			break
+		}
+		for _, item := range response.Body.Instances.KVStoreInstance {
+			if item != nil && tea.StringValue(item.InstanceId) != "" {
+				id := tea.StringValue(item.InstanceId)
+				name := tea.StringValue(item.InstanceName)
+				if name == "" {
+					name = "未命名" + id
+				}
+				out[id] = model.Redis{Name: name, Domain: tea.StringValue(item.ConnectionDomain), IP: tea.StringValue(item.PrivateIp), Port: int(tea.Int64Value(item.Port)), Region: region, Group: resourceGroup(tea.StringValue(item.ResourceGroupId)), Status: tea.StringValue(item.InstanceStatus), IType: tea.StringValue(item.ArchitectureType), Ver: tea.StringValue(item.EngineVersion), Mem: strconv.FormatInt(tea.Int64Value(item.Capacity), 10) + "MB", Exp: date(tea.StringValue(item.EndTime))}
+			}
+		}
+		if int32(len(out)) >= tea.Int32Value(response.Body.TotalCount) {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (p *Provider) clients(ctx context.Context, account, region string) (clients, error) {
+	c, err := p.credentials.Load(ctx, account)
+	if err != nil {
+		return clients{}, fmt.Errorf("load Alibaba Cloud credentials: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return clients{}, err
+	}
+	return p.newClients(c, region)
+}
+
+type apiError struct{ operation string }
+
+func (e apiError) Error() string { return "Alibaba Cloud " + e.operation + " request failed" }
+
+func sdkClients(c Credentials, region string) (clients, error) {
+	config := func(endpoint string) *openapi.Config {
+		return &openapi.Config{AccessKeyId: tea.String(c.AccessKeyID), AccessKeySecret: tea.String(c.AccessKeySecret), Endpoint: tea.String(endpoint)}
+	}
+	configV2 := func(endpoint string) *openapiv2.Config {
+		return &openapiv2.Config{AccessKeyId: tea.String(c.AccessKeyID), AccessKeySecret: tea.String(c.AccessKeySecret), Endpoint: tea.String(endpoint)}
+	}
+	gc, err := resource.NewClient(config("resourcemanager.aliyuncs.com"))
+	if err != nil {
+		return clients{}, err
+	}
+	ec, err := ecs.NewClient(configV2("ecs." + region + ".aliyuncs.com"))
+	if err != nil {
+		return clients{}, err
+	}
+	rc, err := rds.NewClient(configV2("rds." + region + ".aliyuncs.com"))
+	if err != nil {
+		return clients{}, err
+	}
+	rdc, err := redis.NewClient(configV2("r-kvstore." + region + ".aliyuncs.com"))
+	if err != nil {
+		return clients{}, err
+	}
+	return clients{groups: gc.ListResourceGroups, ecs: ec.DescribeInstances, rds: rc.DescribeDBInstances, redis: rdc.DescribeInstances}, nil
+}
+
+func normalizedECS(item *ecs.DescribeInstancesResponseBodyInstancesInstance, region string, external bool) model.ECS {
+	ip := firstInner(item.InnerIpAddress)
+	if ip == "" && item.NetworkInterfaces != nil && len(item.NetworkInterfaces.NetworkInterface) > 0 {
+		ip = tea.StringValue(item.NetworkInterfaces.NetworkInterface[0].PrimaryIpAddress)
+	}
+	if external {
+		if public := firstPublic(item.PublicIpAddress); public != "" {
+			ip = public
+		} else if item.EipAddress != nil && tea.StringValue(item.EipAddress.IpAddress) != "" {
+			ip = tea.StringValue(item.EipAddress.IpAddress)
+		}
+	}
+	tags := map[string]string{}
+	if item.Tags != nil {
+		for _, tag := range item.Tags.Tag {
+			if tag != nil {
+				tags[tea.StringValue(tag.TagKey)] = tea.StringValue(tag.TagValue)
+			}
+		}
+	}
+	return model.ECS{Name: tea.StringValue(item.InstanceName), Group: resourceGroup(tea.StringValue(item.ResourceGroupId)), OSType: strings.ToLower(tea.StringValue(item.OSType)), Status: tea.StringValue(item.Status), Region: region, IP: ip, CPU: strconv.Itoa(int(tea.Int32Value(item.Cpu))) + "核", Mem: strconv.FormatFloat(float64(tea.Int32Value(item.Memory))/1024, 'f', 1, 64) + "GB", Exp: date(tea.StringValue(item.ExpiredTime)), Tags: tags}
+}
+func firstInner(value *ecs.DescribeInstancesResponseBodyInstancesInstanceInnerIpAddress) string {
+	if value != nil && len(value.IpAddress) > 0 {
+		return tea.StringValue(value.IpAddress[0])
+	}
+	return ""
+}
+func firstPublic(value *ecs.DescribeInstancesResponseBodyInstancesInstancePublicIpAddress) string {
+	if value != nil && len(value.IpAddress) > 0 {
+		return tea.StringValue(value.IpAddress[0])
+	}
+	return ""
+}
+func resourceGroup(value string) string {
+	if value == "" {
+		return "无"
+	}
+	return value
+}
+func date(value string) string {
+	if value == "" {
+		return "-"
+	}
+	if before, _, ok := strings.Cut(value, "T"); ok {
+		return before
+	}
+	return value
 }
 
 type credentialStore struct {
@@ -135,13 +285,5 @@ func (s credentialStore) Load(ctx context.Context, account string) (Credentials,
 	if err != nil {
 		return Credentials{}, fmt.Errorf("decrypt secret key: %w", err)
 	}
-	return Credentials{AccessKeyID: ak, AccessKeySecret: sk}, nil
-}
-
-func newClient(credentials Credentials) (ResourceGroupClient, error) {
-	return resource.NewClient(&openapi.Config{
-		AccessKeyId:     tea.String(credentials.AccessKeyID),
-		AccessKeySecret: tea.String(credentials.AccessKeySecret),
-		Endpoint:        tea.String("resourcemanager.aliyuncs.com"),
-	})
+	return Credentials{ak, sk}, nil
 }

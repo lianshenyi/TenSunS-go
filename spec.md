@@ -6,7 +6,7 @@
 
 | Vendor | group 映射（只读） | ECS（只读） | RDS（只读，仅 MySQL） | Redis（只读） |
 | --- | --- | --- | --- | --- |
-| `alicloud` | Resource Manager `ListResourceGroups(PageNumber=1, PageSize=100)`，`Id -> DisplayName` | 不支持 | 不支持 | 不支持 |
+| `alicloud` | Resource Manager `ListResourceGroups(PageNumber=1, PageSize=100)`，`Id -> DisplayName` | ECS `DescribeInstances(MaxResults=100)` | RDS `DescribeDBInstances(Engine=MySQL, MaxResults=100)` | R-KVStore `DescribeInstances(PageSize=50)` |
 | `tencent_cloud` | DCDB `DescribeProjects`，`ProjectId -> Name` | CVM `DescribeInstances` | CDB `DescribeDBInstances` | Redis `DescribeInstances` |
 | `huaweicloud` | EPS `ListEnterpriseProject`，`id -> name` | ECS `ListServersDetails` | RDS `ListInstances(datastore_type=MySQL)` | DCS `ListInstances` |
 | `awscloud` | 固定 `{"1":"1"}`，AWS 无资源组 API | EC2 `DescribeInstances` | RDS `DescribeDBInstances` | ElastiCache `DescribeCacheClusters` |
@@ -28,7 +28,7 @@
 
 ## 依赖与边界
 
-增加各厂商官方 Go SDK；Provider 维持 `Group/ECS/RDS/Redis` 契约，调度器通过既有 `func` 字符串路由。所有调用仅为列举/描述 API，禁止云端写操作。阿里云资源任务保持显式“不支持”。SDK 错误只作为脱敏操作名返回，AK/SK 不得被日志、响应或记录包装/输出。
+增加各厂商官方 Go SDK；Provider 维持 `Group/ECS/RDS/Redis` 契约，调度器通过既有 `func` 字符串路由。阿里云使用区域 endpoint，完整处理 ECS/RDS token 与 Redis page-number 分页；资源组 ID 由既有 sync 层转换为展示名。所有调用仅为列举/描述 API，禁止云端写操作。SDK 错误只作为脱敏操作名返回，AK/SK 不得被日志、响应或记录包装/输出。
 
 ## 测试
 

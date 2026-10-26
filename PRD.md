@@ -9,7 +9,7 @@ Go 后端的新增云账户接口当前返回“尚未实现”，因为创建�
 - 提供可注入的云 Provider 注册表，供资源组同步调用。
 - 创建账户时先同步资源组；仅成功后才保存 group 与所选资源任务并加入调度器。
 - 以与既有 Consul 数据兼容的 KV 路径保存加密 AK/SK、资源组、执行记录和任务定义。
-- 保持阿里云仅有 Resource Manager `ListResourceGroups` 的资源组只读边界；阿里云 ECS/RDS/Redis 任务明确仍不支持。
+- 为阿里云补齐 ECS、RDS（仅 MySQL）、Redis 的只读同步；资源组、实例与状态均与既有 Consul 契约兼容。
 - 接入腾讯云、华为云、AWS 的只读资源组与 ECS/RDS/Redis 查询，并将归一化结果注册到既有 Consul Service/record 契约。
 - 让既有调度器实际执行 `group`、`ecs`、`rds`、`redis` 任务；任何单个任务失败必须写脱敏失败 record，不能使调度器退出。
 - 覆盖资源组同步、任务同步、凭据/API 失败、调度和 HTTP 创建流程测试。
@@ -17,7 +17,7 @@ Go 后端的新增云账户接口当前返回“尚未实现”，因为创建�
 ## 非目标
 
 - 不调用任何云厂商写 API；不在日志、HTTP 响应、Consul record 或测试输出中出现 AK/SK。
-- 不实现阿里云 ECS、RDS、Redis；不实现账户编辑、JumpServer 同步、云端删除或变更。
+- 不实现账户编辑、JumpServer 同步、云端删除或变更。
 - 不改变既有读接口或任务 KV 的字段格式。
 
 ## 用户与成功标准

@@ -38,11 +38,11 @@ func TestLogCloudCapabilities(t *testing.T) {
 	logCloudCapabilities(logger, registry)
 
 	logs := output.String()
-	if !strings.Contains(logs, "resource group providers registered") || !strings.Contains(logs, "providers=[alicloud]") {
+	if !strings.Contains(logs, "read-only cloud providers registered") || !strings.Contains(logs, "providers=[alicloud]") {
 		t.Fatalf("provider registration log = %q", logs)
 	}
-	if !strings.Contains(logs, "ECS, RDS, and Redis task execution is not implemented") {
-		t.Fatalf("execution limitation log = %q", logs)
+	if strings.Contains(logs, "not implemented") {
+		t.Fatalf("stale execution limitation log = %q", logs)
 	}
 	if strings.Contains(logs, "provider registry is empty") {
 		t.Fatalf("misleading empty-registry log = %q", logs)
