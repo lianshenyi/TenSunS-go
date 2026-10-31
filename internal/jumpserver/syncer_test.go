@@ -50,9 +50,9 @@ func TestV2V3AssetCreateUpdateHTTPContracts(t *testing.T) {
 		wantAssetPath string
 	}{
 		{name: "v2_create", version: "V2", wantMethod: http.MethodPost, wantAssetPath: "/api/v1/assets/assets/"},
-		{name: "v2_update", version: "V2", existing: true, wantMethod: http.MethodPut, wantAssetPath: "/api/v1/assets/assets/asset-1/"},
+		{name: "v2_update", version: "V2", existing: true, wantMethod: http.MethodPut, wantAssetPath: "/api/v1/assets/asset-1/"},
 		{name: "v3_create", version: "V3", wantMethod: http.MethodPost, wantAssetPath: "/api/v1/assets/hosts/"},
-		{name: "v3_update", version: "V3", existing: true, wantMethod: http.MethodPut, wantAssetPath: "/api/v1/assets/assets/asset-1/"},
+		{name: "v3_update", version: "V3", existing: true, wantMethod: http.MethodPut, wantAssetPath: "/api/v1/assets/asset-1/"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -71,8 +71,8 @@ func TestQAExistingAssetUsesDocumentedUpdateEndpoint(t *testing.T) {
 	for _, version := range []string{"V2", "V3"} {
 		t.Run(version, func(t *testing.T) {
 			method, path := runAssetHTTPContract(t, version, true)
-			if method != http.MethodPut || path != "/api/v1/assets/assets/asset-1/" {
-				t.Fatalf("asset update = %s %s, want PUT /api/v1/assets/assets/asset-1/", method, path)
+			if method != http.MethodPut || path != "/api/v1/assets/asset-1/" {
+				t.Fatalf("asset update = %s %s, want PUT /api/v1/assets/asset-1/", method, path)
 			}
 		})
 	}

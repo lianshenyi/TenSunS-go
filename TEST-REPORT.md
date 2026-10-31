@@ -17,9 +17,9 @@
 The HTTP mock matrix additionally asserts all four version/action combinations:
 
 - V2 create: `POST /api/v1/assets/assets/`.
-- V2 update: `PUT /api/v1/assets/assets/{asset_id}/`.
+- V2 update: `PUT /api/v1/assets/{asset_id}/`.
 - V3 create: `POST /api/v1/assets/hosts/`.
-- V3 update: `PUT /api/v1/assets/assets/{asset_id}/`.
+- V3 update: `PUT /api/v1/assets/{asset_id}/`.
 
 The tests seed account-level `ecs_info`; this verifies the required account-level-over-global precedence. Empty or absent account-level configuration falls back to global `ecs_info` in production code.
 
