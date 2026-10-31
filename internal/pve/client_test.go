@@ -45,3 +45,23 @@ func TestNewClientRejectsCleartextAPIURL(t *testing.T) {
 		t.Fatal("NewClient accepted HTTP API URL")
 	}
 }
+
+func TestQATLSBoundaryRejectsVerificationBypass(t *testing.T) {
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // Deliberately verifies the rejection boundary.
+	_, err := NewClient(Credentials{APIBaseURL: "https://pve.example:8006/api2/json", TokenID: "id", TokenSecret: "secret"}, IPSelection{}, client)
+	if err == nil {
+		t.Fatal("NewClient accepted a client that disables TLS certificate/hostname verification")
+	}
+}
+
+func TestNewClientRejectsUninspectableTransport(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, nil })}
+	_, err := NewClient(Credentials{APIBaseURL: "https://pve.example:8006/api2/json", TokenID: "id", TokenSecret: "secret"}, IPSelection{}, client)
+	if err == nil {
+		t.Fatal("NewClient accepted an uninspectable transport")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }

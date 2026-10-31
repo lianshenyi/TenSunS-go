@@ -27,7 +27,7 @@ Use a local Consul only. Do not put cloud credentials, JumpServer tokens, or pro
 
 ## PVE
 
-PVE requires an HTTPS API base URL and a dedicated read-only privsep API Token. See [PVE接入说明](docs/PVE接入说明.md) for the encrypted Consul account record, task IDs, Guest Agent prerequisites, and JumpServer setup. The Go client rejects cleartext HTTP PVE endpoints.
+PVE requires an HTTPS API base URL and a dedicated read-only privsep API Token. See [PVE接入说明](docs/PVE接入说明.md) for the encrypted Consul account record, task IDs, Guest Agent prerequisites, and JumpServer setup. The Go client rejects cleartext HTTP endpoints, TLS clients with certificate/hostname verification disabled, and uninspectable custom transports; configure the PVE CA and a matching hostname instead of bypassing TLS verification.
 
 ## Test data and verification
 

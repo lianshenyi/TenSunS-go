@@ -66,10 +66,39 @@ func NewClient(creds Credentials, selection IPSelection, client *http.Client) (*
 	if strings.TrimSpace(creds.TokenID) == "" || strings.TrimSpace(creds.TokenSecret) == "" {
 		return nil, fmt.Errorf("PVE API token ID and secret are required")
 	}
+	secureClient, err := secureHTTPClient(client)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{base: base, tokenID: creds.TokenID, tokenSecret: creds.TokenSecret, http: secureClient, selection: selection}, nil
+}
+
+// secureHTTPClient only accepts the standard transport so TLS verification can
+// be inspected. A custom RoundTripper could silently bypass certificate or
+// hostname verification, which is unsafe because this client sends API tokens.
+func secureHTTPClient(client *http.Client) (*http.Client, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &Client{base: base, tokenID: creds.TokenID, tokenSecret: creds.TokenSecret, http: client, selection: selection}, nil
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	standardTransport, ok := transport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("PVE HTTP client must use a standard transport with TLS verification enabled")
+	}
+	if standardTransport.TLSClientConfig != nil && standardTransport.TLSClientConfig.InsecureSkipVerify {
+		return nil, fmt.Errorf("PVE HTTP client must not disable TLS certificate or hostname verification")
+	}
+
+	copyClient := *client
+	copyTransport := standardTransport.Clone()
+	if copyTransport.TLSClientConfig != nil {
+		copyTransport.TLSClientConfig = copyTransport.TLSClientConfig.Clone()
+	}
+	copyClient.Transport = copyTransport
+	return &copyClient, nil
 }
 
 // ListQEMUVMs lists QEMU VMs and obtains their current agent-reported IPv4.
