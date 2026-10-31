@@ -37,7 +37,7 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
-	return newFixtureWithProvider(t, nil)
+	return newFixtureWithProvider(t, nil, nil)
 }
 
 type httpFakeProvider struct{}
@@ -55,7 +55,7 @@ func (httpFakeProvider) Redis(context.Context, string, string) (map[string]model
 	return nil, nil
 }
 
-func newFixtureWithProvider(t *testing.T, provider cloud.Provider) *fixture {
+func newFixtureWithProvider(t *testing.T, provider cloud.Provider, pveService func(*consul.Store, *cryptox.Cipher) syncservice.Service) *fixture {
 	t.Helper()
 	mock := consulmock.New()
 	if err := mock.SeedDemo(); err != nil {
@@ -76,13 +76,19 @@ func newFixtureWithProvider(t *testing.T, provider cloud.Provider) *fixture {
 	}
 	authSvc := auth.New(testPassword, cryptox.NewTokenSigner("0123456789abcdef0123456789abcdef"))
 	var api *Server
-	if provider == nil {
+	if provider == nil && pveService == nil {
 		api = New(st, cipher, authSvc, sched, logger)
 	} else {
 		registry := cloud.NewRegistry()
-		registry.Register("fake", provider)
+		if provider != nil {
+			registry.Register("fake", provider)
+		}
 		cloudSync := syncservice.NewCloud(registry, st)
-		api = NewWithAccountCreator(st, cipher, authSvc, sched, accounts.NewCreator(st, cipher, cloudSync, sched), logger)
+		groups := accounts.GroupSynchronizer(cloudSync)
+		if pveService != nil {
+			groups = syncservice.NewVendorRouter(cloudSync, map[string]syncservice.Service{"pve": pveService(st, cipher)})
+		}
+		api = NewWithAccountCreator(st, cipher, authSvc, sched, accounts.NewCreator(st, cipher, groups, sched), logger)
 	}
 	apiServer := httptest.NewServer(api.Handler())
 	t.Cleanup(func() {
@@ -104,7 +110,7 @@ func (s jobSchedulerStub) RunNow(ctx context.Context, id string) error {
 }
 
 func TestCreateCloudAccountWithFakeProvider(t *testing.T) {
-	f := newFixtureWithProvider(t, httpFakeProvider{})
+	f := newFixtureWithProvider(t, httpFakeProvider{}, nil)
 	token := f.login(t)
 	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
 		"job_dict": map[string]any{
@@ -134,6 +140,76 @@ func TestCreateCloudAccountWithFakeProvider(t *testing.T) {
 		if _, found := f.sched.NextRun(id); !found {
 			t.Fatalf("task not scheduled %s", id)
 		}
+	}
+}
+
+// TestCreatePVECloudAccount drives the real POST /api/jobs path with the real
+// sync.PVE service, so the creator-written credential KV is consumed by the
+// exact reader that production uses.
+func TestCreatePVECloudAccount(t *testing.T) {
+	f := newFixtureWithProvider(t, nil, func(st *consul.Store, cipher *cryptox.Cipher) syncservice.Service {
+		return syncservice.NewPVE(st, cipher, nil)
+	})
+	token := f.login(t)
+	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+		"job_dict": map[string]any{
+			"dialogStatus": "create", "vendor": "pve", "account": "demo",
+			"api_base_url": "https://pve.example:8006/api2/json", "token_id": "reader@pve!tensuns", "token_secret": "plain-secret",
+			"tls_verify": false, "restype": []string{"group", "ecs"}, "region": []string{"lab-cluster"},
+			"proj_interval": 60, "ecs_interval": 10, "isextip": false,
+		},
+	})
+	if body["code"].(float64) != 20000 {
+		t.Fatalf("create response = %v", body)
+	}
+	var creds map[string]any
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/pve/api/demo", &creds); err != nil || !found {
+		t.Fatalf("pve credentials found=%v err=%v", found, err)
+	}
+	if plain, err := f.cipher.Decrypt(creds["token_secret"].(string)); err != nil || plain != "plain-secret" {
+		t.Fatalf("token secret plaintext=%q err=%v", plain, err)
+	}
+	if creds["api_base_url"] != "https://pve.example:8006/api2/json" || creds["token_id"] != "reader@pve!tensuns" || creds["cluster"] != "lab-cluster" || creds["tls_verify"] != false {
+		t.Fatalf("pve credentials = %#v", creds)
+	}
+	// sync.PVE.Group read the account KV above and wrote the group KV, which
+	// proves the creator-written shape matches the sync reader.
+	var groupKV map[string]string
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/pve/group/demo", &groupKV); err != nil || !found || groupKV["lab-cluster"] != "lab-cluster" {
+		t.Fatalf("pve group found=%v err=%v value=%v", found, err, groupKV)
+	}
+	for _, id := range []string{"pve/demo/group", "pve/demo/ecs/lab-cluster"} {
+		if _, found := f.mock.GetKV("ConsulManager/jobs/" + id); !found {
+			t.Fatalf("missing task %s", id)
+		}
+		if _, found := f.sched.NextRun(id); !found {
+			t.Fatalf("task not scheduled %s", id)
+		}
+	}
+	if _, found := f.mock.GetKV("ConsulManager/assets/pve/aksk/demo"); found {
+		t.Fatal("unexpected aksk KV for PVE account")
+	}
+}
+
+func TestCreatePVECloudAccountRejectsMissingTokenCredentials(t *testing.T) {
+	f := newFixtureWithProvider(t, nil, func(st *consul.Store, cipher *cryptox.Cipher) syncservice.Service {
+		return syncservice.NewPVE(st, cipher, nil)
+	})
+	token := f.login(t)
+	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+		"job_dict": map[string]any{
+			"dialogStatus": "create", "vendor": "pve", "account": "demo",
+			"restype": []string{"group"}, "proj_interval": 60,
+		},
+	})
+	if body["code"].(float64) != 50000 {
+		t.Fatalf("create response = %v", body)
+	}
+	if _, found := f.mock.GetKV("ConsulManager/assets/pve/api/demo"); found {
+		t.Fatal("credentials written for invalid PVE request")
+	}
+	if _, found := f.mock.GetKV("ConsulManager/jobs/pve/demo/group"); found {
+		t.Fatal("task persisted for invalid PVE request")
 	}
 }
 

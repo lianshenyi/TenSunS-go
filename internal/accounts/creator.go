@@ -37,6 +37,13 @@ type Request struct {
 	RDSInterval     int      `json:"rds_interval"`
 	RedisInterval   int      `json:"redis_interval"`
 	ExternalIP      bool     `json:"isextip"`
+	// PVE token credentials; ignored for other vendors.
+	APIBaseURL  string `json:"api_base_url"`
+	TokenID     string `json:"token_id"`
+	TokenSecret string `json:"token_secret"`
+	// TLSVerify mirrors the sync-layer contract: nil (field absent) keeps
+	// certificate verification enabled; only an explicit false disables it.
+	TLSVerify *bool `json:"tls_verify"`
 }
 
 // Creator coordinates secure credential persistence, group synchronization,
@@ -59,16 +66,8 @@ func (c *Creator) Create(ctx context.Context, req Request) error {
 	if err := validate(req); err != nil {
 		return err
 	}
-	ak, err := c.cipher.Encrypt(req.AK)
-	if err != nil {
-		return fmt.Errorf("encrypt access key: %w", err)
-	}
-	sk, err := c.cipher.Encrypt(req.SK)
-	if err != nil {
-		return fmt.Errorf("encrypt secret key: %w", err)
-	}
-	if err := c.store.PutKV(ctx, credentialPath(req.Vendor, req.Account), map[string]string{"ak": ak, "sk": sk}); err != nil {
-		return fmt.Errorf("store encrypted credentials: %w", err)
+	if err := c.storeCredentials(ctx, req); err != nil {
+		return err
 	}
 	if err := c.groups.Group(ctx, req.Vendor, req.Account); err != nil {
 		return fmt.Errorf("sync resource groups: %w", err)
@@ -84,9 +83,54 @@ func (c *Creator) Create(ctx context.Context, req Request) error {
 	return nil
 }
 
+// storeCredentials persists vendor credentials at the path the matching sync
+// service reads. PVE stores its token trio under assets/pve/api/<account> in
+// the pveAccount shape read by sync.PVE; other vendors keep the legacy
+// assets/<vendor>/aksk/<account> AK/SK shape.
+func (c *Creator) storeCredentials(ctx context.Context, req Request) error {
+	if req.Vendor == "pve" {
+		tokenSecret, err := c.cipher.Encrypt(req.TokenSecret)
+		if err != nil {
+			return fmt.Errorf("encrypt PVE token secret: %w", err)
+		}
+		value := map[string]any{
+			"api_base_url": req.APIBaseURL,
+			"token_id":     req.TokenID,
+			"token_secret": tokenSecret,
+			"cluster":      pveCluster(req),
+		}
+		if req.TLSVerify != nil {
+			value["tls_verify"] = *req.TLSVerify
+		}
+		if err := c.store.PutKV(ctx, pveCredentialPath(req.Account), value); err != nil {
+			return fmt.Errorf("store encrypted PVE credentials: %w", err)
+		}
+		return nil
+	}
+	ak, err := c.cipher.Encrypt(req.AK)
+	if err != nil {
+		return fmt.Errorf("encrypt access key: %w", err)
+	}
+	sk, err := c.cipher.Encrypt(req.SK)
+	if err != nil {
+		return fmt.Errorf("encrypt secret key: %w", err)
+	}
+	if err := c.store.PutKV(ctx, credentialPath(req.Vendor, req.Account), map[string]string{"ak": ak, "sk": sk}); err != nil {
+		return fmt.Errorf("store encrypted credentials: %w", err)
+	}
+	return nil
+}
+
 func validate(req Request) error {
-	if req.Vendor == "" || req.Account == "" || req.AK == "" || req.SK == "" {
+	if req.Vendor == "" || req.Account == "" {
 		return fmt.Errorf("vendor, account, ak, and sk are required")
+	}
+	if req.Vendor != "pve" {
+		if req.AK == "" || req.SK == "" {
+			return fmt.Errorf("vendor, account, ak, and sk are required")
+		}
+	} else if req.APIBaseURL == "" || req.TokenID == "" || req.TokenSecret == "" {
+		return fmt.Errorf("api_base_url, token_id, and token_secret are required for PVE")
 	}
 	if req.ProjectInterval <= 0 {
 		return fmt.Errorf("proj_interval must be positive")
@@ -149,4 +193,18 @@ func interval(req Request, resourceType string) int {
 
 func credentialPath(vendor, account string) string {
 	return "ConsulManager/assets/" + vendor + "/aksk/" + account
+}
+
+// pveCredentialPath must match the read path in internal/sync/pve.go.
+func pveCredentialPath(account string) string {
+	return "ConsulManager/assets/pve/api/" + account
+}
+
+// pveCluster derives the PVE cluster identifier from the legacy region form
+// field, which the PVE frontend reuses for the cluster input.
+func pveCluster(req Request) string {
+	if len(req.Regions) > 0 {
+		return req.Regions[0]
+	}
+	return ""
 }
