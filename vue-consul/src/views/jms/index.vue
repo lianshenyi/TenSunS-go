@@ -216,6 +216,7 @@ export default {
       jms_config: this.emptyJmsConfig(),
       hasExistingConfig: false,
       secretConfigured: false,
+      originalAccessKeyId: '',
       rotateSecret: false,
       legacyTokenConfigured: false,
       listLoading: false,
@@ -230,8 +231,11 @@ export default {
     }
   },
   computed: {
+    accessKeyIdChanged() {
+      return this.hasExistingConfig && this.jms_config.access_key_id !== this.originalAccessKeyId
+    },
     shouldRequireSecret() {
-      return !this.hasExistingConfig || !this.secretConfigured || this.rotateSecret
+      return !this.hasExistingConfig || !this.secretConfigured || this.rotateSecret || this.accessKeyIdChanged
     },
     showSecretInput() {
       return this.shouldRequireSecret
@@ -296,7 +300,7 @@ export default {
         return false
       }
       if (this.shouldRequireSecret && !this.jms_config.access_key_secret) {
-        this.$message.error('请填写 Secret Key；该值仅在创建或轮换时需要')
+        this.$message.error('请填写 Secret Key；该值仅在创建、轮换或修改 Access Key ID 时需要')
         return false
       }
       return true
@@ -341,11 +345,13 @@ export default {
           this.secretConfigured = response.jms_config.secret_configured === true
           this.legacyTokenConfigured = response.jms_config.legacy_token_configured === true
           this.jms_config = this.normalizeJmsConfig(response.jms_config)
+          this.originalAccessKeyId = this.jms_config.access_key_id
         } else {
           this.hasExistingConfig = false
           this.secretConfigured = false
           this.legacyTokenConfigured = false
           this.jms_config = this.emptyJmsConfig()
+          this.originalAccessKeyId = ''
         }
         this.rotateSecret = false
         this.listLoading = false

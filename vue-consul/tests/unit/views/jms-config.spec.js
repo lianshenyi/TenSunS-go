@@ -15,6 +15,9 @@ function viewModel(overrides = {}) {
       winuid: 'windows-user',
       custom_ecs_info: ''
     },
+    hasExistingConfig: true,
+    secretConfigured: true,
+    originalAccessKeyId: 'akid-example',
     shouldRequireSecret: false,
     rotateSecret: false
   }
@@ -50,5 +53,39 @@ describe('JMS Access Key configuration', () => {
     const payload = JMS.methods.configPayload.call(viewModel({ shouldRequireSecret: true, rotateSecret: true }))
 
     expect(payload.access_key_secret).toBe('replace-only-secret')
+  })
+
+  it('requires and submits a Secret Key when the Access Key ID changes', () => {
+    const vm = viewModel({
+      jms_config: Object.assign({}, viewModel().jms_config, {
+        access_key_id: 'akid-replacement',
+        access_key_secret: 'replacement-secret'
+      })
+    })
+
+    const accessKeyIdChanged = JMS.computed.accessKeyIdChanged.call(vm)
+    const shouldRequireSecret = JMS.computed.shouldRequireSecret.call(Object.assign(vm, { accessKeyIdChanged }))
+    const payload = JMS.methods.configPayload.call(Object.assign(vm, { shouldRequireSecret }))
+
+    expect(accessKeyIdChanged).toBe(true)
+    expect(shouldRequireSecret).toBe(true)
+    expect(payload.access_key_id).toBe('akid-replacement')
+    expect(payload.access_key_secret).toBe('replacement-secret')
+  })
+
+  it('blocks an Access Key ID change without a Secret Key', () => {
+    const error = jest.fn()
+    const vm = viewModel({
+      jms_config: Object.assign({}, viewModel().jms_config, {
+        access_key_id: 'akid-replacement',
+        access_key_secret: ''
+      }),
+      $message: { error }
+    })
+    const accessKeyIdChanged = JMS.computed.accessKeyIdChanged.call(vm)
+    const shouldRequireSecret = JMS.computed.shouldRequireSecret.call(Object.assign(vm, { accessKeyIdChanged }))
+
+    expect(JMS.methods.validateAccessKeyConfig.call(Object.assign(vm, { shouldRequireSecret }))).toBe(false)
+    expect(error).toHaveBeenCalledWith('请填写 Secret Key；该值仅在创建、轮换或修改 Access Key ID 时需要')
   })
 })
