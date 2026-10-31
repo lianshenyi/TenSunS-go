@@ -25,6 +25,10 @@ Run `make smoke` from the repository root for the integrated compatibility check
 
 Use a local Consul only. Do not put cloud credentials, JumpServer tokens, or production passwords in source control.
 
+## PVE
+
+PVE requires an HTTPS API base URL and a dedicated read-only privsep API Token. See [PVE接入说明](docs/PVE接入说明.md) for the encrypted Consul account record, task IDs, Guest Agent prerequisites, and JumpServer setup. The Go client rejects cleartext HTTP PVE endpoints.
+
 ## Test data and verification
 
 `make smoke` provisions compatible demonstration data. Log in with the password printed/configured by that setup; no application password is stored in the repository.

@@ -22,8 +22,10 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/httpapi"
 	"github.com/lianshenyi/TenSunS-go/internal/jobs"
+	"github.com/lianshenyi/TenSunS-go/internal/jumpserver"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
+	syncservice "github.com/lianshenyi/TenSunS-go/internal/sync"
 	"github.com/lianshenyi/TenSunS-go/internal/version"
 )
 
@@ -66,7 +68,9 @@ func main() {
 	tokenSigner := cryptox.NewTokenSigner(skey)
 	authSvc := auth.New(cfg.AdminPasswd, tokenSigner)
 
-	runtime := &jobs.Runtime{}
+	// PVE is the first executable provider. Its client enforces HTTPS and reads
+	// its API token from encrypted Consul data at job execution time.
+	runtime := &jobs.Runtime{Cloud: syncservice.NewPVE(st, cipher, consulHTTP), JMS: jumpserver.New(st, cipher, consulHTTP)}
 	sched := scheduler.New(runtime, logger)
 	defer sched.Close()
 
@@ -80,7 +84,7 @@ func main() {
 		}
 		logger.Info("tasks loaded from Consul", "loaded", loaded, "skipped", skipped)
 		if loaded > 0 {
-			logger.Warn("cloud/JMS execution adapters are not wired in this skeleton; scheduled jobs will log errors until injected")
+			logger.Warn("only the PVE cloud adapter is wired; other cloud vendors remain unavailable")
 		}
 	}
 
