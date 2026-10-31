@@ -1,34 +1,72 @@
 <template>
   <div class="app-container">
     <el-alert type="success" center close-text="朕知道了">
-      <el-link icon="el-icon-warning" type="success"
+      <el-link
+        icon="el-icon-warning"
+        type="success"
         href="https://github.com/lianshenyi/TenSunS-go/blob/main/docs/%E5%A6%82%E4%BD%95%E6%8A%8A%E4%B8%BB%E6%9C%BA%E8%87%AA%E5%8A%A8%E5%90%8C%E6%AD%A5%E5%88%B0JumpServer.md"
-        target="_blank">应用场景：如何优雅的把主机信息自动同步到JumpServer</el-link>
+        target="_blank"
+      >应用场景：如何优雅的把主机信息自动同步到JumpServer</el-link>
     </el-alert>
-    <el-select v-model="query.vendor" placeholder="云厂商" clearable style="width: 150px" class="filter-item"
-      @change="fetchData(query)">
+    <el-select
+      v-model="query.vendor"
+      placeholder="云厂商"
+      clearable
+      style="width: 150px"
+      class="filter-item"
+      @change="fetchData(query)"
+    >
       <el-option v-for="item in vendor_list" :key="item" :label="item" :value="item" />
     </el-select>
-    <el-select v-model="query.account" placeholder="账户" clearable style="width: 150px" class="filter-item"
-      @change="fetchData(query)">
+    <el-select
+      v-model="query.account"
+      placeholder="账户"
+      clearable
+      style="width: 150px"
+      class="filter-item"
+      @change="fetchData(query)"
+    >
       <el-option v-for="item in account_list" :key="item" :label="item" :value="item" />
     </el-select>
     <el-tooltip effect="light" content="查询所有" placement="top">
-      <el-button class="filter-item" style="margin-left: 10px;" type="success" icon="el-icon-magic-stick" circle
-        @click="resetData" />
+      <el-button
+        class="filter-item"
+        style="margin-left: 10px;"
+        type="success"
+        icon="el-icon-magic-stick"
+        circle
+        @click="resetData"
+      />
     </el-tooltip>
     <el-button class="filter-item" type="primary" icon="el-icon-edit" @click="handleCreate">接入JumpServer</el-button>
     <el-dialog :visible.sync="dialogFormVisible" width="44%">
       <div slot="title" class="header-title">
         <span style="font-size:16px;font-weight:bold;">接入JumpServer</span>&nbsp;&nbsp;
-        <el-link type="primary"
+        <el-link
+          type="primary"
           href="https://github.com/lianshenyi/TenSunS-go/blob/main/docs/%E5%A6%82%E4%BD%95%E6%8A%8A%E4%B8%BB%E6%9C%BA%E8%87%AA%E5%8A%A8%E5%90%8C%E6%AD%A5%E5%88%B0JumpServer.md"
-          target="_blank" icon="el-icon-question">如何填写</el-link>
+          target="_blank"
+          icon="el-icon-question"
+        >如何填写</el-link>
       </div>
-      <el-form ref="dataForm" :model="jms_config" label-position="right" label-width="auto"
-        style="width: 90%; margin-left: 20px;">
-        <el-form-item label="JumpServer URL">
-          <el-input v-model="jms_config.url" placeholder="http开头" style="width: 390px;" />
+      <el-form
+        ref="dataForm"
+        :model="jms_config"
+        label-position="right"
+        label-width="auto"
+        style="width: 90%; margin-left: 20px;"
+      >
+        <el-alert
+          class="access-key-guidance"
+          type="info"
+          :closable="false"
+          show-icon
+          title="使用 Access Key 认证"
+          description="请在 JumpServer 个人信息中创建访问密钥。Secret Key 只会在创建时显示；TenSunS 仅保存您提供的一个密钥，不会创建或枚举密钥。每位用户最多可创建 10 个访问密钥。"
+        />
+        <el-form-item label="JumpServer URL" required>
+          <el-input v-model="jms_config.url" placeholder="https://jumpserver.example.com" style="width: 390px;" />
+          <div class="field-help">必须使用 HTTPS。请确保运行 TenSunS 的主机时间已通过 NTP 同步，否则签名请求可能被拒绝。</div>
         </el-form-item>
         <el-form-item label="JumpServer 版本">
           <el-select v-model="jms_config.ver" placeholder="版本" style="width: 100px" class="filter-item">
@@ -39,9 +77,40 @@
             <font size="3px" color="#ff0000">请更新JumpServer到3.5及以上版本</font>
           </span>
         </el-form-item>
-        <el-form-item label="JumpServer Token">
-          <el-input v-model="jms_config.token" type="password" placeholder="请输入Admin Token" style="width: 390px;" />
+        <el-form-item label="认证方式">
+          <el-tag type="success">Access Key（默认）</el-tag>
+          <span class="field-help inline-help">每个请求都会使用当前时间动态签名。</span>
         </el-form-item>
+        <el-form-item label="Access Key ID" required>
+          <el-input v-model.trim="jms_config.access_key_id" autocomplete="off" placeholder="请输入 Access Key ID" style="width: 390px;" />
+        </el-form-item>
+        <el-form-item label="Secret Key" :required="shouldRequireSecret">
+          <template v-if="showSecretInput">
+            <el-input
+              v-model="jms_config.access_key_secret"
+              type="password"
+              show-password
+              autocomplete="new-password"
+              placeholder="仅在创建或轮换时填写；保存后不会回显"
+              style="width: 390px;"
+            />
+            <div class="field-help">Secret Key 仅在 JumpServer 创建时可见。保存后无法查看；请妥善保管原始值。</div>
+          </template>
+          <template v-else>
+            <el-tag type="success">Secret Key 已配置</el-tag>
+            <el-button type="text" class="rotate-secret" @click="startSecretRotation">轮换 Secret Key</el-button>
+            <div class="field-help">为避免泄露，已保存的 Secret Key 永不回显。只有需要更换时才填写新值。</div>
+          </template>
+        </el-form-item>
+        <el-alert
+          v-if="legacyTokenConfigured"
+          class="legacy-token-notice"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="检测到旧 Token 配置"
+          description="旧 Token 仅保留为迁移状态，未作为输入项或默认认证方式。请填写 Access Key ID 和 Secret Key 后保存以迁移。"
+        />
         <hr style="FILTER: alpha(opacity=100,finishopacity=0,style=2)" align=left width="96%" SIZE=1>
         <h3>全局通用主机【管理用户】信息：</h3>
         <span v-if="jms_config.ver === 'V3'">
@@ -59,8 +128,14 @@
         </div>
         <hr style="FILTER: alpha(opacity=100,finishopacity=0,style=2)" align=left width="96%" SIZE=1>
         <h3>全局特殊主机【管理用户】信息：</h3>
-        <el-input v-model="jms_config.custom_ecs_info" :autosize="{ minRows: 5, maxRows: 18 }" type="textarea"
-          placeholder="请输入标准Json格式，无特殊主机请留空。" class="filter-item" style="width: 530px;" />
+        <el-input
+          v-model="jms_config.custom_ecs_info"
+          :autosize="{ minRows: 5, maxRows: 18 }"
+          type="textarea"
+          placeholder="请输入标准Json格式，无特殊主机请留空。"
+          class="filter-item"
+          style="width: 530px;"
+        />
       </el-form>
       <div slot="footer" class="dialog-footer">
         <el-button @click="dialogFormVisible = false">
@@ -94,14 +169,22 @@
       <el-table-column prop="nextime" label="下次同步" sortable align="center" />
       <el-table-column label="同步" align="center" width="60" class-name="small-padding fixed-width">
         <template slot-scope="{row}">
-          <el-switch v-model="row.sync" active-color="#13ce66"
-            @change="fetchSwitch(row.vendor, row.account, row.sync)" />
+          <el-switch
+            v-model="row.sync"
+            active-color="#13ce66"
+            @change="fetchSwitch(row.vendor, row.account, row.sync)"
+          />
         </template>
       </el-table-column>
     </el-table>
     <el-dialog title="开启同步JumpServer" :visible.sync="swFormVisible" :before-close="fetchData" width="33%">
-      <el-form ref="dataForm" :model="jms_sync" label-position="right" label-width="auto"
-        style="width: 90%; margin-left: 20px;">
+      <el-form
+        ref="dataForm"
+        :model="jms_sync"
+        label-position="right"
+        label-width="auto"
+        style="width: 90%; margin-left: 20px;"
+      >
         <el-form-item label="同步间隔">
           <el-input v-model="jms_sync.interval" style="width: 180px;" type="number">
             <template slot="append">分钟</template>
@@ -130,7 +213,11 @@ import { getJmsList, getJmsConfig, postJmsConfig, postJmsSwitch, postJmsSync } f
 export default {
   data() {
     return {
-      jms_config: { ver: 'V2', url: '', token: '', linuxport: '22', linuxuid: '', winport: '3389', winuid: '', custom_ecs_info: '' },
+      jms_config: this.emptyJmsConfig(),
+      hasExistingConfig: false,
+      secretConfigured: false,
+      rotateSecret: false,
+      legacyTokenConfigured: false,
       listLoading: false,
       dialogFormVisible: false,
       query: { vendor: '', account: '' },
@@ -142,10 +229,78 @@ export default {
       swFormVisible: false
     }
   },
+  computed: {
+    shouldRequireSecret() {
+      return !this.hasExistingConfig || !this.secretConfigured || this.rotateSecret
+    },
+    showSecretInput() {
+      return this.shouldRequireSecret
+    }
+  },
   created() {
     this.fetchData()
   },
   methods: {
+    emptyJmsConfig() {
+      return {
+        auth_type: 'access_key',
+        ver: 'V2',
+        url: '',
+        access_key_id: '',
+        access_key_secret: '',
+        linuxport: '22',
+        linuxuid: '',
+        winport: '3389',
+        winuid: '',
+        custom_ecs_info: ''
+      }
+    },
+    normalizeJmsConfig(config) {
+      const defaults = this.emptyJmsConfig()
+      const normalized = Object.assign(defaults, config || {})
+      // Never retain a legacy Token or a server response Secret in reactive state.
+      delete normalized.token
+      delete normalized.private_token_legacy
+      delete normalized.access_key_secret
+      normalized.auth_type = 'access_key'
+      normalized.access_key_id = config && config.access_key_id ? config.access_key_id : ''
+      normalized.access_key_secret = ''
+      return normalized
+    },
+    startSecretRotation() {
+      this.rotateSecret = true
+      this.jms_config.access_key_secret = ''
+      this.$nextTick(() => {
+        const inputs = this.$el.querySelectorAll('input[type="password"]')
+        if (inputs.length) inputs[0].focus()
+      })
+    },
+    configPayload() {
+      const payload = Object.assign({}, this.jms_config, { auth_type: 'access_key' })
+      delete payload.token
+      delete payload.private_token_legacy
+      delete payload.secret_configured
+      delete payload.legacy_token_configured
+      if (!this.shouldRequireSecret && !this.rotateSecret) {
+        delete payload.access_key_secret
+      }
+      return payload
+    },
+    validateAccessKeyConfig() {
+      if (!this.jms_config.url || !/^https:\/\//i.test(this.jms_config.url)) {
+        this.$message.error('JumpServer URL 必须以 https:// 开头')
+        return false
+      }
+      if (!this.jms_config.access_key_id) {
+        this.$message.error('请填写 Access Key ID')
+        return false
+      }
+      if (this.shouldRequireSecret && !this.jms_config.access_key_secret) {
+        this.$message.error('请填写 Secret Key；该值仅在创建或轮换时需要')
+        return false
+      }
+      return true
+    },
     fetchSwitch(vendor, account, sync) {
       this.switch_dict = { vendor: vendor, account: account, sync: sync }
       if (sync) {
@@ -182,8 +337,17 @@ export default {
       this.listLoading = true
       getJmsConfig().then(response => {
         if (Object.keys(response.jms_config).length !== 0) {
-          this.jms_config = response.jms_config
+          this.hasExistingConfig = true
+          this.secretConfigured = response.jms_config.secret_configured === true
+          this.legacyTokenConfigured = response.jms_config.legacy_token_configured === true
+          this.jms_config = this.normalizeJmsConfig(response.jms_config)
+        } else {
+          this.hasExistingConfig = false
+          this.secretConfigured = false
+          this.legacyTokenConfigured = false
+          this.jms_config = this.emptyJmsConfig()
         }
+        this.rotateSecret = false
         this.listLoading = false
         this.dialogFormVisible = true
       })
@@ -203,10 +367,11 @@ export default {
       })
     },
     createData() {
+      if (!this.validateAccessKeyConfig()) return
       this.$refs['dataForm'].validate((valid) => {
         if (valid) {
           this.listLoading = true
-          postJmsConfig(this.jms_config).then(response => {
+          postJmsConfig(this.configPayload()).then(response => {
             this.listLoading = false
             if (response.code === 20000) {
               this.dialogFormVisible = false
@@ -250,3 +415,26 @@ export default {
   }
 }
 </script>
+
+<style scoped>
+.access-key-guidance,
+.legacy-token-notice {
+  margin: 0 0 18px;
+}
+
+.field-help {
+  color: #606266;
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 530px;
+  padding-top: 4px;
+}
+
+.inline-help {
+  margin-left: 10px;
+}
+
+.rotate-secret {
+  margin-left: 10px;
+}
+</style>

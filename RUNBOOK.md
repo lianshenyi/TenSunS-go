@@ -23,7 +23,7 @@ Run `make smoke` from the repository root for the integrated compatibility check
 - `TENSUNS_API=http://127.0.0.1:2026` (optional Vue dev proxy override)
 - `scheduler_disabled=1` (recommended while cloud adapters are unavailable)
 
-Use a local Consul only. Do not put cloud credentials, JumpServer tokens, or production passwords in source control.
+Use a local Consul only. Do not put cloud credentials, JumpServer access keys, Secret Keys, legacy tokens, or production passwords in source control.
 
 ## Test data and verification
 
@@ -40,6 +40,12 @@ npm run test:ci
 In **云主机列表 → 新增云资源**, select **Proxmox VE** and provide a HTTPS `api_base_url`, `token_id`, `token_secret`, and PVE cluster name. Certificate verification is enabled by default. Prefer installing a private CA in the API container or system trust store; turn it off only for a controlled internal self-signed-certificate exception. The UI never re-displays a saved Token Secret. To replace PVE credentials during editing, enable **更新 PVE 连接配置** and enter all three credential fields again.
 
 The current Go migration baseline exposes the form but does not yet implement `POST /api/jobs` or `POST /api/edit/commit`; those requests return business code `50000`. Do not enter production PVE credentials until the write endpoints are deployed. No mock credential source is used by the UI.
+
+## JumpServer Access Key configuration
+
+In **JumpServer 同步 → 接入 JumpServer**, enter an HTTPS URL, select the JumpServer version, and configure an **Access Key ID** with its **Secret Key**. JumpServer shows a Secret Key only at creation time. TenSunS never displays a stored Secret Key: it is required when saving a new configuration or after selecting **轮换 Secret Key**, and is otherwise omitted from the save request so an existing secret cannot be overwritten with an empty value.
+
+Keep the API host clock synchronized with NTP. Access Key requests use a time-dependent signature and a time-skewed host may receive authentication failures. Use TLS with a trusted certificate; do not use an HTTP URL. JumpServer allows each user to create at most 10 Access Keys; create and manage keys in JumpServer, then store one selected key in TenSunS. Existing permanent Token deployments are shown only as migration status and are never populated into the form.
 
 ## Authenticated identity check
 
