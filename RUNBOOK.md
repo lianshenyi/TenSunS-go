@@ -35,6 +35,12 @@ npm run build:prod
 npm run test:ci
 ```
 
+## PVE account form
+
+In **云主机列表 → 新增云资源**, select **Proxmox VE** and provide a HTTPS `api_base_url`, `token_id`, `token_secret`, and PVE cluster name. Certificate verification is enabled by default. Prefer installing a private CA in the API container or system trust store; turn it off only for a controlled internal self-signed-certificate exception. The UI never re-displays a saved Token Secret. To replace PVE credentials during editing, enable **更新 PVE 连接配置** and enter all three credential fields again.
+
+The current Go migration baseline exposes the form but does not yet implement `POST /api/jobs` or `POST /api/edit/commit`; those requests return business code `50000`. Do not enter production PVE credentials until the write endpoints are deployed. No mock credential source is used by the UI.
+
 ## Authenticated identity check
 
 An authorized reviewer can verify the deployed identity contract without placing a password or token in source, shell history, logs, or issue comments:
