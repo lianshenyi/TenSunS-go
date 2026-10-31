@@ -82,8 +82,9 @@ func main() {
 	logCloudCapabilities(logger, providers)
 	cloudSync := syncservice.NewCloud(providers, st)
 	pveSync := syncservice.NewPVE(st, cipher, consulHTTP)
+	vendorSync := syncservice.NewVendorRouter(cloudSync, map[string]syncservice.Service{"pve": pveSync})
 	runtime := &jobs.Runtime{
-		Cloud: syncservice.NewVendorRouter(cloudSync, map[string]syncservice.Service{"pve": pveSync}),
+		Cloud: vendorSync,
 		JMS:   jumpserver.New(st, cipher, consulHTTP),
 	}
 	sched := scheduler.New(runtime, logger)
@@ -100,7 +101,10 @@ func main() {
 		logger.Info("tasks loaded from Consul", "loaded", loaded, "skipped", skipped)
 	}
 
-	creator := accounts.NewCreator(st, cipher, cloudSync, sched)
+	// The account creator shares the vendor router so creating a PVE account
+	// routes its group sync to sync.PVE (which reads the PVE credential KV)
+	// while the four cloud vendors keep the legacy Cloud service.
+	creator := accounts.NewCreator(st, cipher, vendorSync, sched)
 	api := httpapi.NewWithAccountCreator(st, cipher, authSvc, sched, creator, logger)
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
