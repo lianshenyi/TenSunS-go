@@ -713,7 +713,9 @@ export default {
         this.listLoading = true
         this.dialogStatus = 'run'
         this.job_dict = { dialogStatus: this.dialogStatus, jobid: jobid }
-        PostJob(this.job_dict).then(response => {
+        // 手动同步是同步执行：PVE 侧逐台查 guest-agent IP，几十台 VM 时
+        // 可超过全局 10s 超时，此处单独放宽到 60s（仅影响「立即执行」）。
+        PostJob(this.job_dict, { timeout: 60000 }).then(response => {
           this.fetchData()
           this.$message({
             message: response.data,

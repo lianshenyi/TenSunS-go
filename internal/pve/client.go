@@ -6,14 +6,33 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
+
+// guestAgentConcurrency bounds how many guest-agent IP queries run at once.
+// The production PVE host adds a fixed ~3s latency to every request, so a
+// serial per-VM query turns a 12-VM sync into ~39s and trips the frontend's
+// request timeout. Eight in flight keeps the sync fast without hammering PVE.
+const guestAgentConcurrency = 8
+
+// defaultGuestAgentTimeout bounds one guest-agent query. It must stay above
+// the ~3s per-request latency observed on the production PVE host.
+const defaultGuestAgentTimeout = 5 * time.Second
+
+// guestAgentMaxIndividualFailures caps full WARN lines per sync; any further
+// failures are folded into one summary line so a large fleet cannot flood
+// the log.
+const guestAgentMaxIndividualFailures = 5
 
 // Credentials are the only PVE values required at runtime. TokenSecret must
 // never be logged or persisted in plaintext by callers.
@@ -55,6 +74,9 @@ type Client struct {
 	tokenSecret string
 	http        *http.Client
 	selection   IPSelection
+	// guestAgentTimeout bounds one guest-agent query. NewClient sets the
+	// production default; tests shorten it to keep the suite fast.
+	guestAgentTimeout time.Duration
 }
 
 // NewClient requires an HTTPS API base URL, normally
@@ -81,7 +103,7 @@ func NewClient(creds Credentials, selection IPSelection, client *http.Client) (*
 		// never reach diagnostics, including when TLS verification is overridden.
 		slog.Warn("PVE TLS certificate verification disabled", "host", base.Host)
 	}
-	return &Client{base: base, tokenID: creds.TokenID, tokenSecret: creds.TokenSecret, http: secureClient, selection: selection}, nil
+	return &Client{base: base, tokenID: creds.TokenID, tokenSecret: creds.TokenSecret, http: secureClient, selection: selection, guestAgentTimeout: defaultGuestAgentTimeout}, nil
 }
 
 // secureHTTPClient makes an independent client and transport for one account.
@@ -138,16 +160,94 @@ func (c *Client) ListQEMUVMs(ctx context.Context) ([]VM, error) {
 			continue
 		}
 		vm := VM{ID: "pve-" + item.Node + "-" + fmt.Sprint(item.VMID), VMID: item.VMID, Name: item.Name, Node: item.Node, Status: item.Status, CPU: item.CPU, Memory: item.Memory, OSType: "linux"}
-		if item.Status == "running" {
-			vm.IP = c.guestIPv4(ctx, item.Node, item.VMID)
-		}
 		result = append(result, vm)
 	}
+	c.fillGuestIPv4s(ctx, result)
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result, nil
 }
 
-func (c *Client) guestIPv4(ctx context.Context, node string, vmid int) string {
+// fillGuestIPv4s resolves the agent-reported IPv4 of every running VM with
+// bounded concurrency and a per-VM timeout. A failed query deliberately
+// leaves the IP empty — it is inventory data, not a failure of the whole
+// account sync — and is summarized as WARN logs. A canceled parent context
+// aborts the remaining queries without logging.
+func (c *Client) fillGuestIPv4s(ctx context.Context, vms []VM) {
+	type query struct {
+		index int
+	}
+	var queries []query
+	for i := range vms {
+		if vms[i].Status == "running" {
+			queries = append(queries, query{index: i})
+		}
+	}
+	if len(queries) == 0 {
+		return
+	}
+
+	jobs := make(chan query, len(queries))
+	for _, q := range queries {
+		jobs <- q
+	}
+	close(jobs)
+
+	var (
+		failuresMu sync.Mutex
+		failures   []guestAgentFailure
+		wg         sync.WaitGroup
+	)
+	for range min(guestAgentConcurrency, len(queries)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for q := range jobs {
+				vm := vms[q.index]
+				ip, failure := c.guestIPv4(ctx, vm)
+				vm.IP = ip
+				vms[q.index] = vm
+				if failure != nil {
+					failuresMu.Lock()
+					failures = append(failures, *failure)
+					failuresMu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Deterministic log order, and a cap so a large fleet cannot flood the log.
+	sort.Slice(failures, func(i, j int) bool {
+		if failures[i].node != failures[j].node {
+			return failures[i].node < failures[j].node
+		}
+		return failures[i].vmid < failures[j].vmid
+	})
+	for i := range failures {
+		if i == guestAgentMaxIndividualFailures {
+			slog.Warn("further PVE guest-agent IP query failures omitted from log", "skipped", len(failures)-i)
+			break
+		}
+		f := failures[i]
+		slog.Warn("PVE guest-agent IP query failed", "node", f.node, "vmid", f.vmid, "vm", f.name, "http_status", f.status, "detail", f.detail)
+	}
+}
+
+// guestAgentFailure carries enough of one failed guest-agent query for a
+// WARN line. detail must never contain credentials; it is redacted on the
+// way in.
+type guestAgentFailure struct {
+	node   string
+	vmid   int
+	name   string
+	status int
+	detail string
+}
+
+func (c *Client) guestIPv4(ctx context.Context, vm VM) (string, *guestAgentFailure) {
+	queryCtx, cancel := context.WithTimeout(ctx, c.guestAgentTimeout)
+	defer cancel()
+
 	var response struct {
 		Data struct {
 			Result []struct {
@@ -158,9 +258,14 @@ func (c *Client) guestIPv4(ctx context.Context, node string, vmid int) string {
 			} `json:"result"`
 		} `json:"data"`
 	}
-	path := fmt.Sprintf("/nodes/%s/qemu/%d/agent/network-get-interfaces", url.PathEscape(node), vmid)
-	if err := c.get(ctx, path, &response); err != nil {
-		return ""
+	path := fmt.Sprintf("/nodes/%s/qemu/%d/agent/network-get-interfaces", url.PathEscape(vm.Node), vm.VMID)
+	if err := c.get(queryCtx, path, &response); err != nil {
+		if ctx.Err() != nil {
+			// The whole sync is being canceled (e.g. the caller went away);
+			// that cancellation is surfaced by the caller, not logged here.
+			return "", nil
+		}
+		return "", c.guestAgentFailure(vm, err)
 	}
 	candidates := make([]candidate, 0)
 	for _, iface := range response.Data.Result {
@@ -173,9 +278,33 @@ func (c *Client) guestIPv4(ctx context.Context, node string, vmid int) string {
 		}
 	}
 	if len(candidates) == 0 {
-		return ""
+		return "", nil
 	}
-	return selectIPv4(c.selection, candidates)
+	return selectIPv4(c.selection, candidates), nil
+}
+
+func (c *Client) guestAgentFailure(vm VM, err error) *guestAgentFailure {
+	f := &guestAgentFailure{node: vm.Node, vmid: vm.VMID, name: vm.Name}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		f.status = httpErr.StatusCode
+		f.detail = httpErr.Body
+	} else {
+		f.detail = err.Error()
+	}
+	// Defensive redaction: the PVE token never appears in a response, but
+	// diagnostics must stay credential-free even if PVE echoes one back.
+	f.detail = redactSecrets(f.detail, c.tokenID, c.tokenSecret)
+	return f
+}
+
+func redactSecrets(text, tokenID, tokenSecret string) string {
+	for _, secret := range []string{tokenSecret, tokenID} {
+		if secret != "" {
+			text = strings.ReplaceAll(text, secret, "[redacted]")
+		}
+	}
+	return text
 }
 
 func (c *Client) get(ctx context.Context, endpoint string, out any) error {
@@ -196,12 +325,27 @@ func (c *Client) get(ctx context.Context, endpoint string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("PVE GET %s returned %s", endpoint, resp.Status)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return &HTTPError{Endpoint: endpoint, Status: resp.Status, StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("decode PVE response for %s: %w", endpoint, err)
 	}
 	return nil
+}
+
+// HTTPError carries a non-2xx PVE response for diagnostics. Body is the
+// first 1 KiB of the response; credentials travel in the Authorization
+// request header, never in the response body.
+type HTTPError struct {
+	Endpoint   string
+	Status     string // Full status line, e.g. "500 Internal Server Error".
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("PVE GET %s returned %s", e.Endpoint, e.Status)
 }
 
 // selectIPv4 returns the first address matching CIDR priority, then NIC

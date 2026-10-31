@@ -8,12 +8,19 @@ export function getAllJobs(query_dict) {
   })
 }
 
-export function PostJob(job_dict) {
-  return request({
+export function PostJob(job_dict, options) {
+  const config = {
     url: '/api/jobs',
     method: 'post',
     data: { job_dict }
-  })
+  }
+  // Per-call override for slow synchronous runs (e.g. the manual PVE sync,
+  // which can take tens of seconds with many VMs). The global 10s timeout
+  // in request-ops.js stays untouched for every other call.
+  if (options && options.timeout) {
+    config.timeout = options.timeout
+  }
+  return request(config)
 }
 
 export function DelJob(job_id) {
