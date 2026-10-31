@@ -127,7 +127,9 @@ func (s *Service) Run(ctx context.Context, vendor, account string) error {
 			path = base + "/api/v1/assets/hosts/"
 		}
 		if id := byAddress[service.Address]; id != "" {
-			path += id + "/"
+			// Hosts is a V3 creation endpoint only. Both API versions update
+			// existing assets through the shared assets endpoint.
+			path = base + "/api/v1/assets/assets/" + id + "/"
 			method = http.MethodPut
 		}
 		if err := s.request(ctx, token, method, path, payload, nil); err != nil {
