@@ -45,6 +45,10 @@ The authenticated “同步” button sends `POST /api/jobs` with `job_dict.dial
 
 The `run` contract is covered by `go test ./internal/httpapi -run TestJobRunContract`, which exercises the success, missing-task, invalid-parameter, provider-failure, and failure-record paths over the authenticated HTTP surface.
 
+## PVE
+
+PVE requires an HTTPS API base URL and a dedicated read-only privsep API Token. See [PVE接入说明](docs/PVE接入说明.md) for the encrypted Consul account record, task IDs, Guest Agent prerequisites, and JumpServer setup. Certificate and hostname verification are on by default, including existing account records without `tls_verify`. To use a self-signed endpoint temporarily, set that account's `tls_verify` to `false`; HTTP remains rejected and an alert without credentials is logged. Prefer adding the enterprise/private CA to the container or system trust store.
+
 ## Test data and verification
 
 `make smoke` provisions compatible demonstration data. Log in with the password printed/configured by that setup; no application password is stored in the repository.

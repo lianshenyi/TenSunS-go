@@ -28,6 +28,7 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/httpapi"
 	"github.com/lianshenyi/TenSunS-go/internal/jobs"
+	"github.com/lianshenyi/TenSunS-go/internal/jumpserver"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
 	syncservice "github.com/lianshenyi/TenSunS-go/internal/sync"
@@ -80,7 +81,11 @@ func main() {
 	providers.Register("awscloud", aws.New(st, cipher))
 	logCloudCapabilities(logger, providers)
 	cloudSync := syncservice.NewCloud(providers, st)
-	runtime := &jobs.Runtime{Cloud: cloudSync}
+	pveSync := syncservice.NewPVE(st, cipher, consulHTTP)
+	runtime := &jobs.Runtime{
+		Cloud: syncservice.NewVendorRouter(cloudSync, map[string]syncservice.Service{"pve": pveSync}),
+		JMS:   jumpserver.New(st, cipher, consulHTTP),
+	}
 	sched := scheduler.New(runtime, logger)
 	defer sched.Close()
 
