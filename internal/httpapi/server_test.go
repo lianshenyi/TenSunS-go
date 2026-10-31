@@ -105,6 +105,9 @@ type jobSchedulerStub struct {
 func (s jobSchedulerStub) NextRun(string) (time.Time, bool) { return time.Time{}, false }
 func (s jobSchedulerStub) Remove(string)                    {}
 func (s jobSchedulerStub) UpdateInterval(string, int) error { return nil }
+func (s jobSchedulerStub) Upsert(context.Context, scheduler.JobSpec) error {
+	return nil
+}
 func (s jobSchedulerStub) RunNow(ctx context.Context, id string) error {
 	return s.runNow(ctx, id)
 }

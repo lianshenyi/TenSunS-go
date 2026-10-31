@@ -15,6 +15,7 @@ import (
 	"github.com/lianshenyi/TenSunS-go/internal/accounts"
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
+	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store"
 )
 
@@ -24,6 +25,7 @@ type JobScheduler interface {
 	Remove(id string)
 	UpdateInterval(id string, minutes int) error
 	RunNow(ctx context.Context, id string) error
+	Upsert(ctx context.Context, spec scheduler.JobSpec) error
 }
 
 // Server owns routing and dependencies for the HTTP API.
