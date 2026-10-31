@@ -38,6 +38,10 @@ type fakeJMS struct {
 	// countOverride, when non-zero, replaces the computed asset count.
 	countOverride int
 
+	// listNodesStringForm serves the asset list with nodes as plain string
+	// ids instead of the object arrays real JumpServer V2/V3 endpoints use.
+	listNodesStringForm bool
+
 	failChildrenStatus int
 	failChildrenBody   string
 	failAssetsStatus   int
@@ -95,6 +99,39 @@ func (f *fakeJMS) nodeValue(ids []string) string {
 	return ids[0]
 }
 
+// nodeRefs builds the node references the real list endpoints report for a
+// payload node list: an object with the node id and its display value.
+func (f *fakeJMS) nodeRefs(ids []string) jmsNodeRefs {
+	if len(ids) == 0 {
+		return nil
+	}
+	return jmsNodeRefs{{ID: ids[0], Name: f.nodeValue(ids)}}
+}
+
+// respondAssets writes the asset list in the nodes form matching the
+// scenario: object arrays {"id","name"} by default, plain string ids when
+// listNodesStringForm is set.
+func (f *fakeJMS) respondAssets(w http.ResponseWriter) {
+	if f.listNodesStringForm {
+		out := make([]map[string]any, 0, len(f.assets))
+		for _, asset := range f.assets {
+			out = append(out, map[string]any{
+				"id":            asset.ID,
+				"ip":            asset.IP,
+				"address":       asset.Address,
+				"hostname":      asset.Hostname,
+				"name":          asset.Name,
+				"protocols":     asset.Protocols,
+				"nodes":         asset.Nodes.ids(),
+				"nodes_display": asset.NodesDisplay,
+			})
+		}
+		respondJSON(w, out)
+		return
+	}
+	respondJSON(w, f.assets)
+}
+
 // treeCounts counts assets per node by the raw last path segment, mirroring
 // how the tree endpoint reports "name (N)".
 func (f *fakeJMS) treeCounts() map[string]int {
@@ -132,7 +169,7 @@ func (f *fakeJMS) handleAssets(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, f.failAssetsBody)
 			return
 		}
-		respondJSON(w, f.assets)
+		f.respondAssets(w)
 	case id == "" && r.Method == http.MethodPost:
 		var payload map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&payload)
@@ -142,12 +179,14 @@ func (f *fakeJMS) handleAssets(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, f.failWriteBody)
 			return
 		}
+		ids := f.nodeIDs(payload)
 		f.nextID++
 		f.assets = append(f.assets, jmsAsset{
 			ID:           "asset-" + strconv.Itoa(f.nextID),
 			IP:           stringField(payload["ip"]),
 			Hostname:     stringField(payload["hostname"]),
-			NodesDisplay: []string{f.nodeValue(f.nodeIDs(payload))},
+			Nodes:        f.nodeRefs(ids),
+			NodesDisplay: []string{f.nodeValue(ids)},
 		})
 		w.WriteHeader(http.StatusCreated)
 	case id != "" && r.Method == http.MethodPut:
@@ -159,11 +198,13 @@ func (f *fakeJMS) handleAssets(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, f.failWriteBody)
 			return
 		}
+		ids := f.nodeIDs(payload)
 		for index := range f.assets {
 			if f.assets[index].ID == id {
 				f.assets[index].IP = stringField(payload["ip"])
 				f.assets[index].Hostname = stringField(payload["hostname"])
-				f.assets[index].NodesDisplay = []string{f.nodeValue(f.nodeIDs(payload))}
+				f.assets[index].Nodes = f.nodeRefs(ids)
+				f.assets[index].NodesDisplay = []string{f.nodeValue(ids)}
 			}
 		}
 		w.WriteHeader(http.StatusOK)
@@ -206,6 +247,7 @@ func (f *fakeJMS) handleHosts(w http.ResponseWriter, r *http.Request) {
 			ID:           "asset-" + strconv.Itoa(f.nextID),
 			Address:      stringField(payload["address"]),
 			Name:         stringField(payload["name"]),
+			Nodes:        f.nodeRefs(f.nodeIDs(payload)),
 			NodesDisplay: []string{f.nodeValue(f.nodeIDs(payload))},
 		})
 		w.WriteHeader(http.StatusCreated)
@@ -222,6 +264,7 @@ func (f *fakeJMS) handleHosts(w http.ResponseWriter, r *http.Request) {
 			if f.assets[index].ID == id {
 				f.assets[index].Address = stringField(payload["address"])
 				f.assets[index].Name = stringField(payload["name"])
+				f.assets[index].Nodes = f.nodeRefs(f.nodeIDs(payload))
 				f.assets[index].NodesDisplay = []string{f.nodeValue(f.nodeIDs(payload))}
 			}
 		}
@@ -918,5 +961,119 @@ func TestSyncFailureOnCountRecordsStatus50000(t *testing.T) {
 	}
 	if record["status"] != float64(50000) || record["msg"] != "同步资源失败！count exploded" {
 		t.Fatalf("failure record = %#v", record)
+	}
+}
+
+// TestAssetNodesUnmarshalAcceptsBothForms pins the dual node decoding: real
+// JumpServer V2/V3 list endpoints return object arrays, legacy responses
+// bare id strings, and both must decode into the same asset shape.
+func TestAssetNodesUnmarshalAcceptsBothForms(t *testing.T) {
+	var asset jmsAsset
+	if err := json.Unmarshal([]byte(`{"nodes":[{"id":"node-1","name":"未分组"}]}`), &asset); err != nil {
+		t.Fatal(err)
+	}
+	if len(asset.Nodes) != 1 || asset.Nodes[0].ID != "node-1" || asset.Nodes[0].Name != "未分组" {
+		t.Fatalf("object form decoded as %#v", asset.Nodes)
+	}
+	if ids := asset.Nodes.ids(); !reflect.DeepEqual(ids, []string{"node-1"}) {
+		t.Fatalf("object form ids() = %v, want [node-1]", ids)
+	}
+	// The group fallback reads the node name so 未分组 still maps to 无.
+	if got := asset.groupName(); got != "无" {
+		t.Fatalf("object form groupName() = %q, want 无", got)
+	}
+
+	if err := json.Unmarshal([]byte(`{"nodes":["node-2"]}`), &asset); err != nil {
+		t.Fatal(err)
+	}
+	if len(asset.Nodes) != 1 || asset.Nodes[0].ID != "node-2" || asset.Nodes[0].Name != "" {
+		t.Fatalf("string form decoded as %#v", asset.Nodes)
+	}
+	if got := asset.nodePath(); got != "node-2" {
+		t.Fatalf("string form nodePath() fallback = %q, want node-2", got)
+	}
+
+	if err := json.Unmarshal([]byte(`{"nodes":null}`), &asset); err != nil {
+		t.Fatal(err)
+	}
+	if asset.Nodes != nil {
+		t.Fatalf("null nodes decoded as %#v, want nil", asset.Nodes)
+	}
+}
+
+// TestObjectFormAssetNodesSyncSucceedsAndGroups reproduces the production
+// list shape: JumpServer V2/V3 asset lists return nodes as object arrays.
+// Before the fix, the list re-fetch after creation failed to decode and the
+// whole sync was recorded as failed even though the asset was written.
+func TestObjectFormAssetNodesSyncSucceedsAndGroups(t *testing.T) {
+	fake := newFakeJMS(t)
+	fake.nodes = append(fake.nodes,
+		jmsNode{ID: "node-1", Value: "未分组"},
+		jmsNode{ID: "node-2", Value: "dev"},
+	)
+	fake.assets = append(fake.assets, jmsAsset{
+		ID:           "asset-seed",
+		IP:           "10.0.0.20",
+		Hostname:     "app-01",
+		Nodes:        jmsNodeRefs{{ID: "node-1", Name: "未分组"}},
+		NodesDisplay: []string{"未分组"},
+	})
+	store := newJMSStore(t, fake, "V2")
+	store.putKV(t, "ConsulManager/assets/pve/group/lab", map[string]string{"g-1": "dev"})
+	store.registerService(t, "vm-1", "app-01", "10.0.0.20", "dev", "linux")
+	if err := store.run(t); err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]any
+	if !store.getValue(t, "ConsulManager/record/jms/pve/lab", &record) {
+		t.Fatal("record was not written")
+	}
+	if record["status"] != float64(20000) {
+		t.Fatalf("record = %#v, want successful sync", record)
+	}
+	// The seed asset sits under 未分组 but the service wants dev.
+	payload := lastPayload(t, fake)
+	assertJSONField(t, payload, "nodes", []any{"node-2"})
+
+	putCount := func() int {
+		count := 0
+		for _, request := range fake.requests {
+			if strings.HasPrefix(request, http.MethodPut) {
+				count++
+			}
+		}
+		return count
+	}
+	putsAfterMove := putCount()
+	if putsAfterMove != 1 {
+		t.Fatalf("asset PUTs after move = %d, want 1; requests=%v", putsAfterMove, fake.requests)
+	}
+	// A second Run must decode the object-form list again and see the group
+	// as already correct, so it must not issue another asset update.
+	if err := store.run(t); err != nil {
+		t.Fatal(err)
+	}
+	if got := putCount(); got != putsAfterMove {
+		t.Fatalf("asset PUTs after second Run = %d, want %d (no update for a correct group)", got, putsAfterMove)
+	}
+}
+
+// TestStringFormAssetNodesSyncSucceeds keeps the legacy list shape working:
+// nodes as a plain string id array must still decode and complete the sync.
+func TestStringFormAssetNodesSyncSucceeds(t *testing.T) {
+	fake := newFakeJMS(t)
+	fake.listNodesStringForm = true
+	fake.nodes = append(fake.nodes, jmsNode{ID: "node-1", Value: "未分组"})
+	store := newJMSStore(t, fake, "V2")
+	store.registerService(t, "vm-1", "app-01", "10.0.0.20", "无", "linux")
+	if err := store.run(t); err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]any
+	if !store.getValue(t, "ConsulManager/record/jms/pve/lab", &record) {
+		t.Fatal("record was not written")
+	}
+	if record["status"] != float64(20000) {
+		t.Fatalf("record = %#v, want successful sync", record)
 	}
 }

@@ -55,6 +55,47 @@ type jmsNode struct {
 	Value string `json:"value"`
 }
 
+// jmsNodeRef is one node reference of an asset list entry. Real JumpServer
+// V2/V3 list endpoints return object arrays {"id","name"}; legacy responses
+// return bare node id strings, which decode as a ref with only the id set.
+type jmsNodeRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// jmsNodeRefs accepts both node reference forms the JumpServer list
+// endpoints produce: an array of {"id","name"} objects or an array of node
+// id strings.
+type jmsNodeRefs []jmsNodeRef
+
+func (n *jmsNodeRefs) UnmarshalJSON(data []byte) error {
+	var refs []jmsNodeRef
+	if err := json.Unmarshal(data, &refs); err == nil {
+		*n = refs
+		return nil
+	}
+	var ids []string
+	if err := json.Unmarshal(data, &ids); err != nil {
+		return err
+	}
+	*n = make(jmsNodeRefs, 0, len(ids))
+	for _, id := range ids {
+		*n = append(*n, jmsNodeRef{ID: id})
+	}
+	return nil
+}
+
+// ids returns the node ids in order.
+func (n jmsNodeRefs) ids() []string {
+	out := make([]string, 0, len(n))
+	for _, ref := range n {
+		if ref.ID != "" {
+			out = append(out, ref.ID)
+		}
+	}
+	return out
+}
+
 // jmsAsset is the shared V2 asset / V3 host shape from the list endpoint.
 type jmsAsset struct {
 	ID           string          `json:"id"`
@@ -63,7 +104,7 @@ type jmsAsset struct {
 	Hostname     string          `json:"hostname"`
 	Name         string          `json:"name"`
 	Protocols    json.RawMessage `json:"protocols"`
-	Nodes        []string        `json:"nodes"`
+	Nodes        jmsNodeRefs     `json:"nodes"`
 	NodesDisplay []string        `json:"nodes_display"`
 }
 
@@ -101,13 +142,18 @@ func (a jmsAsset) assetName() string {
 }
 
 // nodePath returns the first node path, mirroring the baseline's
-// nodes_display[0] with a nodes[0] fallback.
+// nodes_display[0] with a nodes[0] fallback. The fallback prefers the node
+// object's display name so grouping stays meaningful, and keeps the bare id
+// for the legacy string form.
 func (a jmsAsset) nodePath() string {
 	if len(a.NodesDisplay) > 0 {
 		return a.NodesDisplay[0]
 	}
 	if len(a.Nodes) > 0 {
-		return a.Nodes[0]
+		if a.Nodes[0].Name != "" {
+			return a.Nodes[0].Name
+		}
+		return a.Nodes[0].ID
 	}
 	return ""
 }
