@@ -55,7 +55,7 @@ func (s *Server) handleJMS(w http.ResponseWriter, r *http.Request) {
 		case "switch":
 			s.jmsSwitch(w, r)
 		case "sync":
-			s.jmsSyncPlaceholder(w)
+			s.jmsSync(w, r)
 		default:
 			s.notFound(w, r)
 		}
@@ -438,11 +438,71 @@ func (s *Server) jmsSwitch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": fmt.Sprintf("【%s/%s】同步功能关闭！", vendor, account)})
 }
 
-func (s *Server) jmsSyncPlaceholder(w http.ResponseWriter) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"code": 50000,
-		"data": "Go 迁移阶段尚未实现：JumpServer V2/V3 同步器尚未接入。",
-	})
+// jmsSync mirrors the baseline POST /api/jms/sync: persist the node id and
+// interval, register the __main__:sync_jms.run task, run the first sync
+// synchronously (the frontend timeout is already 600s for this call), persist
+// the task KV only on success, and roll the task back when the first sync
+// fails.
+func (s *Server) jmsSync(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		JMSSync map[string]any `json:"jms_sync"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		s.businessError(w, err)
+		return
+	}
+	vendorDisplay := stringValue(req.JMSSync["vendor"])
+	vendor, ok := config.InternalVendor(vendorDisplay)
+	if !ok {
+		s.businessError(w, fmt.Errorf("unknown vendor %q", vendorDisplay))
+		return
+	}
+	account := stringValue(req.JMSSync["account"])
+	nodeID := stringValue(req.JMSSync["nodeid"])
+	if nodeID == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"code": 50000, "data": "新节点ID不能为空"})
+		return
+	}
+	interval, err := intValue(req.JMSSync["interval"])
+	if err != nil || interval <= 0 {
+		s.businessError(w, fmt.Errorf("invalid JumpServer sync interval"))
+		return
+	}
+	ctx := r.Context()
+	if err := s.store.PutKV(ctx, "ConsulManager/jms/"+vendor+"/"+account+"/node_id", map[string]any{"node_id": nodeID, "interval": interval}); err != nil {
+		s.businessError(w, err)
+		return
+	}
+	if s.jobs == nil {
+		s.businessError(w, fmt.Errorf("scheduler is not available"))
+		return
+	}
+	spec := scheduler.JobSpec{
+		ID:              vendor + "/" + account + "/jms",
+		Func:            "__main__:sync_jms.run",
+		Args:            []any{vendor, account},
+		Minutes:         interval,
+		Trigger:         "interval",
+		ReplaceExisting: true,
+	}
+	if err := s.jobs.Upsert(ctx, spec); err != nil {
+		s.businessError(w, err)
+		return
+	}
+	if err := s.jobs.RunNow(ctx, spec.ID); err != nil {
+		// A failed first sync must not leave a task behind that a restart
+		// would reload against the already-overwritten node config.
+		s.jobs.Remove(spec.ID)
+		_ = s.store.DeleteKV(ctx, "ConsulManager/jms/jobs/"+vendor+"/"+account)
+		s.logger.Warn("JumpServer first sync failed", "vendor", vendor, "account", account, "error", err)
+		writeJSON(w, http.StatusOK, map[string]any{"code": 50000, "data": fmt.Sprintf("【%s/%s】同步功能开启失败，请查看后端日志！", vendor, account)})
+		return
+	}
+	if err := s.store.PutKV(ctx, "ConsulManager/jms/jobs/"+vendor+"/"+account, spec); err != nil {
+		s.businessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": fmt.Sprintf("【%s/%s】同步JumpServer功能开启！首次同步完成", vendor, account)})
 }
 
 func protocolPort(value any) string {

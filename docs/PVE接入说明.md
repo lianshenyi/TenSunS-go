@@ -14,4 +14,4 @@
 
 IP 仅选择非 loopback、非 link-local 的 IPv4；依次按 `cidr_priority`、`nic_priority`、字典序选取。账户/VM 级静态覆盖仍使用 `ConsulManager/assets/sync_ecs_custom/{iid}`。VM 必须运行、已启用 QEMU Guest Agent，且客体系统的 `qemu-guest-agent` 正常运行；缺失、超时或没有合格 IP 只在执行记录标注 `ip_unavailable`，不会使整个同步失败，也不会删除原有服务。
 
-启用 JumpServer 时，配置既有 `jms_info`、`ecs_info` 和 `ConsulManager/jms/pve/{account}/node_id`，再创建 JMS 任务。同步器优先读取账户级 `ConsulManager/jms/pve/{account}/ecs_info`；该值不存在或为空时回退全局 `ConsulManager/jms/ecs_info`。V2 使用 `protocols` 与 `admin_user`，V3 使用协议对象（含固定的同端口 `sftp`）与账号模板 `accounts:[{"template":"..."}]`；默认从加密的 `jms_info.access_key_id` / `access_key_secret` 逐请求签名，旧 `jms_info.token` 仅作迁移兼容。
+启用 JumpServer 时，配置既有 `jms_info`、`ecs_info` 和 `ConsulManager/jms/pve/{account}/node_id`，再创建 JMS 任务。同步器优先读取账户级 `ConsulManager/jms/pve/{account}/ecs_info`；该值不存在或为空时回退全局 `ConsulManager/jms/ecs_info`。V2 使用 `protocols` 与 `admin_user`，V3 使用协议对象（含固定的同端口 `sftp`）与账号模板 `accounts:[{"template":"..."}]`；Token 仍只从加密的 `jms_info.token` 读取。

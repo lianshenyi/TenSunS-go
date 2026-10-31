@@ -4,6 +4,7 @@ package cloud
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/lianshenyi/TenSunS-go/internal/cloud/model"
@@ -52,5 +53,6 @@ func (r *Registry) Vendors() []string {
 	for vendor := range r.providers {
 		out = append(out, vendor)
 	}
+	slices.Sort(out)
 	return out
 }
