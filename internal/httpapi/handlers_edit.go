@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 )
 
@@ -47,8 +48,9 @@ type editJob struct {
 	ECSInterval     json.Number `json:"ecs_interval"`
 	RDSInterval     json.Number `json:"rds_interval"`
 	RedisInterval   json.Number `json:"redis_interval"`
-	// AK/SK override fields belong to the shared legacy form; PVE ignores
-	// them because its credentials are the token trio below.
+	// AK/SK override fields belong to the shared legacy form. The four cloud
+	// vendors honor them through akskswitch; PVE ignores them because its
+	// credentials are the token trio below.
 	AKSwitch bool   `json:"akskswitch"`
 	AK       string `json:"ak"`
 	SK       string `json:"sk"`
@@ -61,8 +63,9 @@ type editJob struct {
 	TLSVerify   *bool   `json:"tls_verify"`
 }
 
-// editCommit implements POST /api/edit/commit for vendor=pve. The four cloud
-// vendors keep the migration placeholder until their adapters exist.
+// editCommit implements POST /api/edit/commit for every registered vendor:
+// PVE and the four cloud vendors. Unknown vendors are an explicit error, not
+// the migration placeholder.
 func (s *Server) editCommit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		EditJob editJob `json:"editJob"`
@@ -72,14 +75,11 @@ func (s *Server) editCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job := req.EditJob
-	if job.Vendor != "pve" {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"code": 50000,
-			"data": "Go 迁移阶段尚未实现：编辑云资源需要云适配器与任务创建流程。",
-		})
+	if _, ok := config.Vendors[job.Vendor]; !ok {
+		s.businessError(w, fmt.Errorf("unsupported vendor %q", job.Vendor))
 		return
 	}
-	if err := s.commitPVEEdit(r, job); err != nil {
+	if err := s.commitEdit(r, job); err != nil {
 		s.businessError(w, err)
 		return
 	}
@@ -89,11 +89,11 @@ func (s *Server) editCommit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// commitPVEEdit mirrors the legacy Python edit_cloud semantics: credential
-// fields overwrite only when present, the group task is kept and follows
-// proj_interval, selected resource tasks are created or updated, and
-// unselected ones are removed from both Consul and the in-memory scheduler.
-func (s *Server) commitPVEEdit(r *http.Request, job editJob) error {
+// commitEdit mirrors the legacy Python edit_cloud semantics: credential fields
+// are handled per vendor, the group task is kept and follows proj_interval,
+// selected resource tasks are created or updated, and unselected ones are
+// removed from both Consul and the in-memory scheduler.
+func (s *Server) commitEdit(r *http.Request, job editJob) error {
 	ctx := r.Context()
 	if job.Account == "" || job.Region == "" {
 		return fmt.Errorf("account and region are required")
@@ -125,7 +125,11 @@ func (s *Server) commitPVEEdit(r *http.Request, job editJob) error {
 		}
 		intervals[resourceType] = int(n)
 	}
-	if err := s.overlayPVECredentials(ctx, job); err != nil {
+	if job.Vendor == "pve" {
+		if err := s.overlayPVECredentials(ctx, job); err != nil {
+			return err
+		}
+	} else if err := s.overlayCloudCredentials(ctx, job); err != nil {
 		return err
 	}
 
@@ -287,6 +291,35 @@ func (s *Server) overlayPVECredentials(ctx context.Context, job editJob) error {
 	}
 	if err := s.store.PutKV(ctx, path, creds); err != nil {
 		return fmt.Errorf("store PVE credentials: %w", err)
+	}
+	return nil
+}
+
+// overlayCloudCredentials mirrors the legacy put_aksk semantics for the four
+// cloud vendors. With akskswitch on, ConsulManager/assets/<vendor>/aksk/<account>
+// is overwritten with freshly AES-encrypted AK/SK in the same shape
+// accounts.Creator.storeCredentials writes and the sync layer reads; with the
+// switch off the stored credentials keep their values. An enabled switch with
+// an empty AK or SK is an explicit error: silently persisting empty values
+// would break the next sync.
+func (s *Server) overlayCloudCredentials(ctx context.Context, job editJob) error {
+	if !job.AKSwitch {
+		return nil
+	}
+	if job.AK == "" || job.SK == "" {
+		return fmt.Errorf("ak and sk must not be empty when akskswitch is on")
+	}
+	ak, err := s.cipher.Encrypt(job.AK)
+	if err != nil {
+		return fmt.Errorf("encrypt access key: %w", err)
+	}
+	sk, err := s.cipher.Encrypt(job.SK)
+	if err != nil {
+		return fmt.Errorf("encrypt secret key: %w", err)
+	}
+	path := "ConsulManager/assets/" + job.Vendor + "/aksk/" + job.Account
+	if err := s.store.PutKV(ctx, path, map[string]string{"ak": ak, "sk": sk}); err != nil {
+		return fmt.Errorf("store cloud credentials: %w", err)
 	}
 	return nil
 }

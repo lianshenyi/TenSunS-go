@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
+	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
 	syncservice "github.com/lianshenyi/TenSunS-go/internal/sync"
 )
@@ -209,25 +211,228 @@ func TestPVEEditRejectsMissingGroupTask(t *testing.T) {
 	}
 }
 
-// TestEditCommitKeepsCloudPlaceholder is the regression assertion for the
-// four cloud vendors: they must still return the migration placeholder.
-func TestEditCommitKeepsCloudPlaceholder(t *testing.T) {
+// cloudVendors drives one httptest per scenario for each of the four cloud
+// vendors, using the stable vendor keys from the config registry. The alicloud
+// entry uses a region the demo seed does not contain, so "create missing task"
+// assertions start from a clean slate.
+var cloudVendors = []struct{ vendor, account, region string }{
+	{"alicloud", "main", "cn-shanghai"},
+	{"awscloud", "main", "us-east-1"},
+	{"huaweicloud", "main", "cn-north-4"},
+	{"tencent_cloud", "main", "ap-shanghai"},
+}
+
+// cloudEditFixture seeds a cloud account's job KVs in the exact shapes the
+// create chain writes (accounts.taskSpecs) and registers them in the in-memory
+// scheduler, so edit assertions cover both Consul and the scheduler. seedCreds
+// also stores an old AK/SK pair to prove overwrite and keep-unchanged
+// semantics.
+func cloudEditFixture(t *testing.T, vendor, account, region string, restype []string, seedCreds bool) *fixture {
+	t.Helper()
+	f := newFixture(t)
+	ctx := context.Background()
+	specs := []scheduler.JobSpec{{
+		ID: vendor + "/" + account + "/group", Func: "__main__:" + vendor + ".group",
+		Args: []any{account}, Minutes: 60, Trigger: "interval", ReplaceExisting: true,
+	}}
+	for _, resourceType := range []string{"ecs", "rds", "redis"} {
+		if !slices.Contains(restype, resourceType) {
+			continue
+		}
+		args := []any{account, region}
+		if resourceType == "ecs" {
+			args = append(args, false)
+		}
+		specs = append(specs, scheduler.JobSpec{
+			ID:   vendor + "/" + account + "/" + resourceType + "/" + region,
+			Func: "__main__:" + vendor + "." + resourceType, Args: args, Minutes: 10,
+			Trigger: "interval", ReplaceExisting: true,
+		})
+	}
+	for _, spec := range specs {
+		if err := f.store.PutKV(ctx, "ConsulManager/jobs/"+spec.ID, spec); err != nil {
+			t.Fatalf("seed job %s: %v", spec.ID, err)
+		}
+		if err := f.sched.Upsert(ctx, spec); err != nil {
+			t.Fatalf("seed scheduler %s: %v", spec.ID, err)
+		}
+	}
+	if seedCreds {
+		oldAK, err := f.cipher.Encrypt("old-access")
+		if err != nil {
+			t.Fatal(err)
+		}
+		oldSK, err := f.cipher.Encrypt("old-secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.store.PutKV(ctx, "ConsulManager/assets/"+vendor+"/aksk/"+account, map[string]string{"ak": oldAK, "sk": oldSK}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f
+}
+
+// cloudCreds returns the decrypted AK/SK pair stored for a cloud account.
+func cloudCreds(t *testing.T, f *fixture, vendor, account string) (string, string) {
+	t.Helper()
+	stored := map[string]string{}
+	found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/"+vendor+"/aksk/"+account, &stored)
+	if err != nil || !found {
+		t.Fatalf("cloud credentials found=%v err=%v", found, err)
+	}
+	ak, err := f.cipher.Decrypt(stored["ak"])
+	if err != nil {
+		t.Fatalf("decrypt ak: %v", err)
+	}
+	sk, err := f.cipher.Decrypt(stored["sk"])
+	if err != nil {
+		t.Fatalf("decrypt sk: %v", err)
+	}
+	return ak, sk
+}
+
+// cloudEditJob builds the editJob payload the frontend sends for a cloud
+// vendor. Intervals stay strings to keep the plain-text interval input path
+// covered.
+func cloudEditJob(vendor, account, region string, restype []string, isextip, akskswitch bool, ak, sk string) map[string]any {
+	return map[string]any{
+		"vendor": vendor, "account": account, "region": region,
+		"restype": restype, "isextip": isextip,
+		"proj_interval": "60", "ecs_interval": "25", "rds_interval": "20", "redis_interval": "20",
+		"akskswitch": akskswitch, "ak": ak, "sk": sk,
+	}
+}
+
+func TestCloudEditOverwritesCredentialsWhenSwitchOn(t *testing.T) {
+	for _, c := range cloudVendors {
+		t.Run(c.vendor, func(t *testing.T) {
+			f := cloudEditFixture(t, c.vendor, c.account, c.region, []string{"group", "ecs"}, true)
+			token := f.login(t)
+			body := editCommit(t, f, token, cloudEditJob(c.vendor, c.account, c.region, []string{"group", "ecs"}, false, true, "new-access", "new-secret"))
+			if body["code"].(float64) != 20000 || body["data"] != c.vendor+"/"+c.account+"/"+c.region+"：编辑成功！" {
+				t.Fatalf("edit response = %v", body)
+			}
+			ak, sk := cloudCreds(t, f, c.vendor, c.account)
+			if ak != "new-access" || sk != "new-secret" {
+				t.Fatalf("credentials not overwritten: ak=%q sk=%q", ak, sk)
+			}
+			// The string interval from the plain-text input is applied.
+			if ecs := jobKV(t, f, c.vendor+"/"+c.account+"/ecs/"+c.region); ecs["minutes"].(float64) != 25 {
+				t.Fatalf("ecs minutes = %v", ecs["minutes"])
+			}
+		})
+	}
+}
+
+func TestCloudEditKeepsCredentialsWhenSwitchOff(t *testing.T) {
+	for _, c := range cloudVendors {
+		t.Run(c.vendor, func(t *testing.T) {
+			f := cloudEditFixture(t, c.vendor, c.account, c.region, []string{"group", "ecs"}, true)
+			token := f.login(t)
+			body := editCommit(t, f, token, cloudEditJob(c.vendor, c.account, c.region, []string{"group", "ecs"}, false, false, "", ""))
+			if body["code"].(float64) != 20000 {
+				t.Fatalf("edit response = %v", body)
+			}
+			ak, sk := cloudCreds(t, f, c.vendor, c.account)
+			if ak != "old-access" || sk != "old-secret" {
+				t.Fatalf("credentials changed without switch: ak=%q sk=%q", ak, sk)
+			}
+		})
+	}
+}
+
+func TestCloudEditRejectsEmptyKeysWhenSwitchOn(t *testing.T) {
+	f := cloudEditFixture(t, "alicloud", "main", "cn-shanghai", []string{"group", "ecs"}, true)
+	token := f.login(t)
+	for _, empty := range []map[string]any{
+		cloudEditJob("alicloud", "main", "cn-shanghai", []string{"group", "ecs"}, false, true, "", "secret"),
+		cloudEditJob("alicloud", "main", "cn-shanghai", []string{"group", "ecs"}, false, true, "access", ""),
+	} {
+		body := editCommit(t, f, token, empty)
+		if body["code"].(float64) != 50000 {
+			t.Fatalf("edit with empty key = %v", body)
+		}
+		// No silent empty-value write: the stored credentials keep their values.
+		ak, sk := cloudCreds(t, f, "alicloud", "main")
+		if ak != "old-access" || sk != "old-secret" {
+			t.Fatalf("credentials mutated on rejected edit: ak=%q sk=%q", ak, sk)
+		}
+	}
+}
+
+func TestCloudEditCreatesMissingTaskWithoutRunning(t *testing.T) {
+	for _, c := range cloudVendors {
+		t.Run(c.vendor, func(t *testing.T) {
+			f := cloudEditFixture(t, c.vendor, c.account, c.region, []string{"group"}, false)
+			token := f.login(t)
+			body := editCommit(t, f, token, cloudEditJob(c.vendor, c.account, c.region, []string{"group", "ecs"}, true, false, "", ""))
+			if body["code"].(float64) != 20000 {
+				t.Fatalf("edit response = %v", body)
+			}
+			id := c.vendor + "/" + c.account + "/ecs/" + c.region
+			ecs := jobKV(t, f, id)
+			if ecs["id"] != id || ecs["func"] != "__main__:"+c.vendor+".ecs" || ecs["minutes"].(float64) != 25 {
+				t.Fatalf("new ecs task = %#v", ecs)
+			}
+			args := ecs["args"].([]any)
+			if len(args) != 3 || args[0] != c.account || args[1] != c.region || args[2] != true {
+				t.Fatalf("new ecs args = %#v", args)
+			}
+			// Created but not executed immediately: no execution record exists.
+			if _, ok := f.mock.GetKV("ConsulManager/record/jobs/" + id); ok {
+				t.Fatal("new task was executed immediately")
+			}
+			if next, ok := f.sched.NextRun(id); !ok || !next.Equal(time.Date(2026, 10, 23, 14, 25, 0, 0, time.Local)) {
+				t.Fatalf("new ecs task not scheduled: next=%v ok=%v", next, ok)
+			}
+		})
+	}
+}
+
+func TestCloudEditRemovesUncheckedTasks(t *testing.T) {
+	for _, c := range cloudVendors {
+		t.Run(c.vendor, func(t *testing.T) {
+			f := cloudEditFixture(t, c.vendor, c.account, c.region, []string{"group", "ecs"}, false)
+			token := f.login(t)
+			body := editCommit(t, f, token, cloudEditJob(c.vendor, c.account, c.region, []string{"group"}, false, false, "", ""))
+			if body["code"].(float64) != 20000 {
+				t.Fatalf("edit response = %v", body)
+			}
+			id := c.vendor + "/" + c.account + "/ecs/" + c.region
+			if _, ok := f.mock.GetKV("ConsulManager/jobs/" + id); ok {
+				t.Fatal("unchecked ecs task KV still exists")
+			}
+			if _, ok := f.sched.NextRun(id); ok {
+				t.Fatal("unchecked ecs task still scheduled")
+			}
+			// The group task is kept.
+			groupID := c.vendor + "/" + c.account + "/group"
+			if _, ok := f.mock.GetKV("ConsulManager/jobs/" + groupID); !ok {
+				t.Fatal("group task KV was removed")
+			}
+			if _, ok := f.sched.NextRun(groupID); !ok {
+				t.Fatal("group task no longer scheduled")
+			}
+		})
+	}
+}
+
+// TestEditCommitRejectsUnknownVendor asserts an unknown vendor is an explicit
+// error, never the migration placeholder.
+func TestEditCommitRejectsUnknownVendor(t *testing.T) {
 	f := newFixture(t)
 	token := f.login(t)
 	body := editCommit(t, f, token, map[string]any{
-		"vendor": "alicloud", "account": "main", "region": "cn-hangzhou",
-		"restype": []string{"group", "ecs", "rds", "redis"}, "isextip": true,
+		"vendor": "oracle", "account": "main", "region": "eu-1",
+		"restype": []string{"group"}, "isextip": false,
 		"proj_interval": 60, "ecs_interval": 10, "rds_interval": 20, "redis_interval": 20,
-		"akskswitch": true, "ak": "access", "sk": "secret",
+		"akskswitch": false, "ak": "", "sk": "",
 	})
-	if body["code"].(float64) != 50000 || body["data"] != "Go 迁移阶段尚未实现：编辑云资源需要云适配器与任务创建流程。" {
-		t.Fatalf("cloud edit response = %v", body)
+	if body["code"].(float64) != 50000 {
+		t.Fatalf("unknown vendor response = %v", body)
 	}
-	ecs := jobKV(t, f, "alicloud/main/ecs/cn-hangzhou")
-	if ecs["minutes"].(float64) != 10 {
-		t.Fatalf("cloud task mutated: %#v", ecs)
-	}
-	if _, ok := f.mock.GetKV("ConsulManager/assets/alicloud/aksk/main"); ok {
-		t.Fatal("cloud credentials were written")
+	if body["data"] == "Go 迁移阶段尚未实现：编辑云资源需要云适配器与任务创建流程。" {
+		t.Fatal("unknown vendor fell back to the migration placeholder")
 	}
 }
