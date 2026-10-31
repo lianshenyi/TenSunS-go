@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/lianshenyi/TenSunS-go/internal/accounts"
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/store"
@@ -27,21 +28,31 @@ type JobScheduler interface {
 
 // Server owns routing and dependencies for the HTTP API.
 type Server struct {
-	store  store.Store
-	cipher *cryptox.Cipher
-	auth   *auth.Service
-	jobs   JobScheduler
-	logger *slog.Logger
-	mux    *http.ServeMux
+	store   store.Store
+	cipher  *cryptox.Cipher
+	auth    *auth.Service
+	jobs    JobScheduler
+	creator *accounts.Creator
+	logger  *slog.Logger
+	mux     *http.ServeMux
 }
 
 // New builds the API server. jobs may be nil in read-only tests; handlers
 // then degrade nextime to "无" and mutations return a business error.
 func New(st store.Store, cipher *cryptox.Cipher, authSvc *auth.Service, jobs JobScheduler, logger *slog.Logger) *Server {
+	return newServer(st, cipher, authSvc, jobs, nil, logger)
+}
+
+// NewWithAccountCreator builds an API server with account creation enabled.
+func NewWithAccountCreator(st store.Store, cipher *cryptox.Cipher, authSvc *auth.Service, jobs JobScheduler, creator *accounts.Creator, logger *slog.Logger) *Server {
+	return newServer(st, cipher, authSvc, jobs, creator, logger)
+}
+
+func newServer(st store.Store, cipher *cryptox.Cipher, authSvc *auth.Service, jobs JobScheduler, creator *accounts.Creator, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s := &Server{store: st, cipher: cipher, auth: authSvc, jobs: jobs, logger: logger}
+	s := &Server{store: st, cipher: cipher, auth: authSvc, jobs: jobs, creator: creator, logger: logger}
 	s.mux = http.NewServeMux()
 	s.routes()
 	return s

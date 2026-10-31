@@ -50,6 +50,7 @@ var Vendors = map[string]string{
 	"tencent_cloud": "腾讯云",
 	"huaweicloud":   "华为云",
 	"awscloud":      "AWS云",
+	"pve":           "Proxmox VE",
 }
 
 // Regions contains the same region code -> display-name tables as
@@ -142,6 +143,9 @@ var Regions = map[string]map[string]string{
 		"na-ashburn":       "美国东部(弗吉尼亚)",
 		"na-siliconvalley": "美国西部(硅谷)",
 		"eu-frankfurt":     "欧洲地区(法兰克福)",
+	},
+	"pve": {
+		"none": "无",
 	},
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,18 +13,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lianshenyi/TenSunS-go/internal/accounts"
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/model"
 	"github.com/lianshenyi/TenSunS-go/internal/consulmock"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/jobs"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
+	syncservice "github.com/lianshenyi/TenSunS-go/internal/sync"
 )
 
 const testPassword = "test-password"
 
 type fixture struct {
 	api    *httptest.Server
+	server *Server
 	mock   *consulmock.Server
 	store  *consul.Store
 	sched  *scheduler.Scheduler
@@ -31,6 +37,25 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
+	return newFixtureWithProvider(t, nil, nil)
+}
+
+type httpFakeProvider struct{}
+
+func (httpFakeProvider) Group(context.Context, string) (map[string]string, error) {
+	return map[string]string{"group-1": "研发"}, nil
+}
+func (httpFakeProvider) ECS(context.Context, string, string, bool) (map[string]model.ECS, error) {
+	return nil, nil
+}
+func (httpFakeProvider) RDS(context.Context, string, string) (map[string]model.RDS, error) {
+	return nil, nil
+}
+func (httpFakeProvider) Redis(context.Context, string, string) (map[string]model.Redis, error) {
+	return nil, nil
+}
+
+func newFixtureWithProvider(t *testing.T, provider cloud.Provider, pveService func(*consul.Store, *cryptox.Cipher) syncservice.Service) *fixture {
 	t.Helper()
 	mock := consulmock.New()
 	if err := mock.SeedDemo(); err != nil {
@@ -50,12 +75,142 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	authSvc := auth.New(testPassword, cryptox.NewTokenSigner("0123456789abcdef0123456789abcdef"))
-	apiServer := httptest.NewServer(New(st, cipher, authSvc, sched, logger).Handler())
+	var api *Server
+	if provider == nil && pveService == nil {
+		api = New(st, cipher, authSvc, sched, logger)
+	} else {
+		registry := cloud.NewRegistry()
+		if provider != nil {
+			registry.Register("fake", provider)
+		}
+		cloudSync := syncservice.NewCloud(registry, st)
+		groups := accounts.GroupSynchronizer(cloudSync)
+		if pveService != nil {
+			groups = syncservice.NewVendorRouter(cloudSync, map[string]syncservice.Service{"pve": pveService(st, cipher)})
+		}
+		api = NewWithAccountCreator(st, cipher, authSvc, sched, accounts.NewCreator(st, cipher, groups, sched), logger)
+	}
+	apiServer := httptest.NewServer(api.Handler())
 	t.Cleanup(func() {
 		apiServer.Close()
 		sched.Close()
 	})
-	return &fixture{api: apiServer, mock: mock, store: st, sched: sched, cipher: cipher}
+	return &fixture{api: apiServer, server: api, mock: mock, store: st, sched: sched, cipher: cipher}
+}
+
+type jobSchedulerStub struct {
+	runNow func(context.Context, string) error
+}
+
+func (s jobSchedulerStub) NextRun(string) (time.Time, bool) { return time.Time{}, false }
+func (s jobSchedulerStub) Remove(string)                    {}
+func (s jobSchedulerStub) UpdateInterval(string, int) error { return nil }
+func (s jobSchedulerStub) RunNow(ctx context.Context, id string) error {
+	return s.runNow(ctx, id)
+}
+
+func TestCreateCloudAccountWithFakeProvider(t *testing.T) {
+	f := newFixtureWithProvider(t, httpFakeProvider{}, nil)
+	token := f.login(t)
+	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+		"job_dict": map[string]any{
+			"dialogStatus": "create", "vendor": "fake", "account": "demo", "ak": "access", "sk": "secret",
+			"restype": []string{"group", "ecs", "rds"}, "region": []string{"test-1"}, "proj_interval": 60,
+			"ecs_interval": 10, "rds_interval": 20, "redis_interval": 20, "isextip": true,
+		},
+	})
+	if body["code"].(float64) != 20000 {
+		t.Fatalf("create response = %v", body)
+	}
+	var groups map[string]string
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/fake/group/demo", &groups); err != nil || !found || groups["group-1"] != "研发" {
+		t.Fatalf("groups found=%v err=%v value=%v", found, err, groups)
+	}
+	var credentials map[string]string
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/fake/aksk/demo", &credentials); err != nil || !found {
+		t.Fatalf("credentials found=%v err=%v", found, err)
+	}
+	if plain, err := f.cipher.Decrypt(credentials["sk"]); err != nil || plain != "secret" {
+		t.Fatalf("credential plaintext=%q err=%v", plain, err)
+	}
+	for _, id := range []string{"fake/demo/group", "fake/demo/ecs/test-1", "fake/demo/rds/test-1"} {
+		if _, found := f.mock.GetKV("ConsulManager/jobs/" + id); !found {
+			t.Fatalf("missing task %s", id)
+		}
+		if _, found := f.sched.NextRun(id); !found {
+			t.Fatalf("task not scheduled %s", id)
+		}
+	}
+}
+
+// TestCreatePVECloudAccount drives the real POST /api/jobs path with the real
+// sync.PVE service, so the creator-written credential KV is consumed by the
+// exact reader that production uses.
+func TestCreatePVECloudAccount(t *testing.T) {
+	f := newFixtureWithProvider(t, nil, func(st *consul.Store, cipher *cryptox.Cipher) syncservice.Service {
+		return syncservice.NewPVE(st, cipher, nil)
+	})
+	token := f.login(t)
+	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+		"job_dict": map[string]any{
+			"dialogStatus": "create", "vendor": "pve", "account": "demo",
+			"api_base_url": "https://pve.example:8006/api2/json", "token_id": "reader@pve!tensuns", "token_secret": "plain-secret",
+			"tls_verify": false, "restype": []string{"group", "ecs"}, "region": []string{"lab-cluster"},
+			"proj_interval": 60, "ecs_interval": 10, "isextip": false,
+		},
+	})
+	if body["code"].(float64) != 20000 {
+		t.Fatalf("create response = %v", body)
+	}
+	var creds map[string]any
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/pve/api/demo", &creds); err != nil || !found {
+		t.Fatalf("pve credentials found=%v err=%v", found, err)
+	}
+	if plain, err := f.cipher.Decrypt(creds["token_secret"].(string)); err != nil || plain != "plain-secret" {
+		t.Fatalf("token secret plaintext=%q err=%v", plain, err)
+	}
+	if creds["api_base_url"] != "https://pve.example:8006/api2/json" || creds["token_id"] != "reader@pve!tensuns" || creds["cluster"] != "lab-cluster" || creds["tls_verify"] != false {
+		t.Fatalf("pve credentials = %#v", creds)
+	}
+	// sync.PVE.Group read the account KV above and wrote the group KV, which
+	// proves the creator-written shape matches the sync reader.
+	var groupKV map[string]string
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/pve/group/demo", &groupKV); err != nil || !found || groupKV["lab-cluster"] != "lab-cluster" {
+		t.Fatalf("pve group found=%v err=%v value=%v", found, err, groupKV)
+	}
+	for _, id := range []string{"pve/demo/group", "pve/demo/ecs/lab-cluster"} {
+		if _, found := f.mock.GetKV("ConsulManager/jobs/" + id); !found {
+			t.Fatalf("missing task %s", id)
+		}
+		if _, found := f.sched.NextRun(id); !found {
+			t.Fatalf("task not scheduled %s", id)
+		}
+	}
+	if _, found := f.mock.GetKV("ConsulManager/assets/pve/aksk/demo"); found {
+		t.Fatal("unexpected aksk KV for PVE account")
+	}
+}
+
+func TestCreatePVECloudAccountRejectsMissingTokenCredentials(t *testing.T) {
+	f := newFixtureWithProvider(t, nil, func(st *consul.Store, cipher *cryptox.Cipher) syncservice.Service {
+		return syncservice.NewPVE(st, cipher, nil)
+	})
+	token := f.login(t)
+	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+		"job_dict": map[string]any{
+			"dialogStatus": "create", "vendor": "pve", "account": "demo",
+			"restype": []string{"group"}, "proj_interval": 60,
+		},
+	})
+	if body["code"].(float64) != 50000 {
+		t.Fatalf("create response = %v", body)
+	}
+	if _, found := f.mock.GetKV("ConsulManager/assets/pve/api/demo"); found {
+		t.Fatal("credentials written for invalid PVE request")
+	}
+	if _, found := f.mock.GetKV("ConsulManager/jobs/pve/demo/group"); found {
+		t.Fatal("task persisted for invalid PVE request")
+	}
 }
 
 func (f *fixture) request(t *testing.T, method, path, token string, body any) (int, map[string]any) {
@@ -327,4 +482,74 @@ func TestJobUpdateAndDelete(t *testing.T) {
 	if _, ok := f.sched.NextRun("alicloud/main/ecs/cn-hangzhou"); ok {
 		t.Fatal("job still scheduled after delete")
 	}
+}
+
+func TestJobRunContract(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		f := newFixture(t)
+		token := f.login(t)
+		_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+			"job_dict": map[string]any{"dialogStatus": "run", "jobid": "alicloud/main/ecs/cn-hangzhou"},
+		})
+		if body["code"].(float64) != 20000 || body["data"] != "10.23/14:12：ECS同步成功！总数：2，开机：1，关机：1" {
+			t.Fatalf("run response = %v", body)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		jobID string
+		jobs  JobScheduler
+	}{
+		{name: "missing task", jobID: "missing"},
+		{name: "invalid parameter", jobID: "   "},
+		{
+			name:  "execution failure is redacted",
+			jobID: "alicloud/main/ecs/cn-hangzhou",
+			jobs: jobSchedulerStub{runNow: func(context.Context, string) error {
+				return errors.New("provider rejected secret access-key")
+			}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			if tc.jobs != nil {
+				f.server.jobs = tc.jobs
+			}
+			token := f.login(t)
+			_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+				"job_dict": map[string]any{"dialogStatus": "run", "jobid": tc.jobID},
+			})
+			if body["code"].(float64) != 50000 || body["data"] != "请求处理失败，请查看后端日志！" {
+				t.Fatalf("run error response = %v", body)
+			}
+			if strings.Contains(body["data"].(string), "provider") || strings.Contains(body["data"].(string), "access-key") {
+				t.Fatalf("provider error leaked in response: %v", body)
+			}
+		})
+	}
+
+	t.Run("failure record is returned", func(t *testing.T) {
+		f := newFixture(t)
+		f.server.jobs = jobSchedulerStub{runNow: func(_ context.Context, id string) error {
+			// The sync layer writes a fixed, credential-safe failure record
+			// before it reports the provider error.
+			if err := f.mock.SetKV("ConsulManager/record/jobs/"+id, map[string]any{
+				"status": 50000, "count": "无", "on": 0, "off": 0, "update": "失败", "msg": "ECS同步失败",
+			}); err != nil {
+				return err
+			}
+			return errors.New("provider rejected secret access-key")
+		}}
+		token := f.login(t)
+		_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+			"job_dict": map[string]any{"dialogStatus": "run", "jobid": "alicloud/main/ecs/cn-hangzhou"},
+		})
+		if body["code"].(float64) != 50000 || body["data"] != "失败：ECS同步失败" {
+			t.Fatalf("run failure response = %v", body)
+		}
+		if strings.Contains(body["data"].(string), "provider") || strings.Contains(body["data"].(string), "access-key") {
+			t.Fatalf("provider error leaked in response: %v", body)
+		}
+	})
 }

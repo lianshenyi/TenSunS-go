@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lianshenyi/TenSunS-go/internal/accounts"
 	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 )
@@ -156,6 +158,26 @@ func (s *Server) mutateJob(w http.ResponseWriter, r *http.Request) {
 	}
 	status := stringValue(req.JobDict["dialogStatus"])
 	switch status {
+	case "create":
+		if s.creator == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"code": 50000, "data": "Go 迁移阶段尚未实现：新增云账户任务需要资源组同步适配器。"})
+			return
+		}
+		raw, err := json.Marshal(req.JobDict)
+		if err != nil {
+			s.businessError(w, fmt.Errorf("encode create job request: %w", err))
+			return
+		}
+		var create accounts.Request
+		if err := json.Unmarshal(raw, &create); err != nil {
+			s.businessError(w, fmt.Errorf("decode create job request: %w", err))
+			return
+		}
+		if err := s.creator.Create(r.Context(), create); err != nil {
+			s.businessError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": create.Vendor + "/" + create.Account + "：创建成功！"})
 	case "update":
 		jobID := stringValue(req.JobDict["jobid"])
 		interval, err := intValue(req.JobDict["interval"])
@@ -185,19 +207,61 @@ func (s *Server) mutateJob(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": "更新成功！"})
-	case "create":
-		writeJSON(w, http.StatusOK, map[string]any{
-			"code": 50000,
-			"data": "Go 迁移阶段尚未实现：新增云账户任务需要资源组同步适配器。",
-		})
 	case "run":
+		jobID := strings.TrimSpace(stringValue(req.JobDict["jobid"]))
+		if jobID == "" || s.jobs == nil {
+			s.businessError(w, fmt.Errorf("invalid run job request"))
+			return
+		}
+		// The task is executed synchronously and the record is read only
+		// afterwards, so the response carries this run's record instead of the
+		// previous one.
+		runErr := s.jobs.RunNow(r.Context(), jobID)
+		record, found, err := s.readJobRecord(r.Context(), jobID)
+		if err != nil {
+			s.businessError(w, fmt.Errorf("read run job record %q: %w", jobID, err))
+			return
+		}
+		status, statusErr := intValue(record.Status)
+		if !found || statusErr != nil || record.Update == "" || record.Msg == "" {
+			// Without a usable record there is no "{update}：{msg}" contract
+			// to return; fall back to the generic redacted error.
+			s.businessError(w, runErr)
+			return
+		}
+		if runErr != nil && status == 20000 {
+			// The run failed before it wrote its own record, so the stored
+			// record still describes an earlier successful run.
+			s.businessError(w, runErr)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"code": 50000,
-			"data": "Go 迁移阶段尚未实现：云同步任务执行器尚未接入。",
+			"code": status,
+			"data": record.Update + "：" + record.Msg,
 		})
 	default:
 		s.businessError(w, fmt.Errorf("unknown dialogStatus %q", status))
 	}
+}
+
+// jobRecord is the subset of a task execution record used by the manual-run
+// contract. The sync layer writes fixed, credential-safe messages, so the
+// record can be returned to the client without further redaction.
+type jobRecord struct {
+	Status any    `json:"status"`
+	Update string `json:"update"`
+	Msg    string `json:"msg"`
+}
+
+// readJobRecord reads the execution record of a task. found is false when the
+// task has no record yet.
+func (s *Server) readJobRecord(ctx context.Context, jobID string) (jobRecord, bool, error) {
+	var record jobRecord
+	found, err := s.store.GetValue(ctx, "ConsulManager/record/jobs/"+jobID, &record)
+	if err != nil {
+		return jobRecord{}, false, err
+	}
+	return record, found, nil
 }
 
 func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {
