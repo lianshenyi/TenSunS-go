@@ -746,6 +746,58 @@ func TestSyncFailureRecordsStatus50000(t *testing.T) {
 	}
 }
 
+// TestLargeAssetListNotTruncated pins the getJSON read bound: a real
+// JumpServer list with a dozen hosts already exceeds 4 KiB, and the earlier
+// 4 KiB cap truncated the JSON mid-token, failing the whole sync. The 50
+// listed assets make the list response well over 4 KiB: one matches a
+// service and is updated, one service is created from scratch, and the 49
+// stale assets are deleted.
+func TestLargeAssetListNotTruncated(t *testing.T) {
+	fake := newFakeJMS(t)
+	fake.nodes = append(fake.nodes, jmsNode{ID: "node-1", Value: "未分组"})
+	fake.assets = append(fake.assets, jmsAsset{ID: "asset-1", IP: "10.0.0.20", Hostname: "old-name", NodesDisplay: []string{"未分组"}})
+	for i := 0; i < 49; i++ {
+		fake.assets = append(fake.assets, jmsAsset{
+			ID:           fmt.Sprintf("asset-stale-%d", i),
+			IP:           fmt.Sprintf("10.9.0.%d", i+1),
+			Hostname:     fmt.Sprintf("ghost-%d", i),
+			NodesDisplay: []string{"未分组"},
+		})
+	}
+	store := newJMSStore(t, fake, "V2")
+	store.registerService(t, "vm-1", "app-01", "10.0.0.20", "无", "linux")
+	store.registerService(t, "vm-2", "app-02", "10.0.0.30", "无", "linux")
+	if err := store.run(t); err != nil {
+		t.Fatal(err)
+	}
+	var putPaths, postPaths []string
+	for _, request := range fake.requests {
+		parts := strings.SplitN(request, " ", 2)
+		switch parts[0] {
+		case http.MethodPost:
+			postPaths = append(postPaths, parts[1])
+		case http.MethodPut:
+			putPaths = append(putPaths, parts[1])
+		}
+	}
+	if len(putPaths) != 1 || putPaths[0] != "/api/v1/assets/assets/asset-1/" {
+		t.Fatalf("PUT requests = %v, want one update of asset-1", putPaths)
+	}
+	if len(postPaths) != 1 || postPaths[0] != "/api/v1/assets/assets/" {
+		t.Fatalf("POST requests = %v, want one create of app-02", postPaths)
+	}
+	if len(fake.deletedAssets) != 49 {
+		t.Fatalf("deleted assets = %d, want 49 stale assets", len(fake.deletedAssets))
+	}
+	hostnames := map[string]bool{}
+	for _, asset := range fake.assets {
+		hostnames[asset.Hostname] = true
+	}
+	if !hostnames["app-01"] || !hostnames["app-02"] || len(hostnames) != 2 {
+		t.Fatalf("assets after sync = %v, want app-01 and app-02 only", hostnames)
+	}
+}
+
 func TestSyncFailureOnCountRecordsStatus50000(t *testing.T) {
 	fake := newFakeJMS(t)
 	fake.failCountStatus = http.StatusInternalServerError

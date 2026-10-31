@@ -496,14 +496,17 @@ func (s *Service) assetCount(ctx context.Context, token, base, nodeID string) (i
 }
 
 // getJSON performs an authenticated GET and decodes the JSON body. Errors and
-// undecodable bodies yield the JumpServer error detail when present.
+// undecodable bodies yield the JumpServer error detail when present. The read
+// is bounded only as a memory safeguard: real JumpServer asset and node lists
+// easily exceed a few KiB, and a small cap truncated them mid-JSON, failing
+// the whole sync.
 func (s *Service) getJSON(ctx context.Context, token, endpoint string, out any) (string, error) {
 	resp, err := s.do(ctx, token, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "未知ERROR", err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return "未知ERROR", err
 	}
