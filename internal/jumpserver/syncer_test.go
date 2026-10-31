@@ -29,7 +29,8 @@ type fakeJMS struct {
 	assets []jmsAsset
 	nextID int
 
-	requests      []string         // "METHOD /path" in arrival order
+	requests      []string // "METHOD /path" in arrival order
+	authHeaders   []string
 	payloads      []map[string]any // POST/PUT bodies in arrival order
 	deletedAssets []string
 	deletedNodes  []string
@@ -63,6 +64,7 @@ func (f *fakeJMS) handler() http.Handler {
 
 func (f *fakeJMS) record(r *http.Request, payload map[string]any) {
 	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
+	f.authHeaders = append(f.authHeaders, r.Header.Get("Authorization"))
 	if payload != nil {
 		f.payloads = append(f.payloads, payload)
 	}
@@ -307,6 +309,7 @@ type jmsTestStore struct {
 	cipher *cryptox.Cipher
 	ctx    context.Context
 	http   *http.Client
+	jmsURL string
 }
 
 func newJMSStore(t *testing.T, fake *fakeJMS, version string) *jmsTestStore {
@@ -335,7 +338,7 @@ func newJMSStore(t *testing.T, fake *fakeJMS, version string) *jmsTestStore {
 			t.Fatal(err)
 		}
 	}
-	return &jmsTestStore{st: st, cipher: cipher, ctx: ctx, http: jms.Client()}
+	return &jmsTestStore{st: st, cipher: cipher, ctx: ctx, http: jms.Client(), jmsURL: jms.URL}
 }
 
 func (j *jmsTestStore) registerService(t *testing.T, id, name, address, group, osType string) {
@@ -424,6 +427,29 @@ func TestQAV3PayloadIncludesProtocolsAndAccounts(t *testing.T) {
 	}
 	if payload["platform"] != "5" || payload["domain"] != "" || payload["address"] != "10.0.0.20" || payload["name"] != "app-01" {
 		t.Fatalf("V3 payload = %#v", payload)
+	}
+}
+
+func TestFullReconcileUsesAccessKeyAuthentication(t *testing.T) {
+	fake := newFakeJMS(t)
+	st := newJMSStore(t, fake, "V3")
+	keyID, err := st.cipher.Encrypt("key-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := st.cipher.Encrypt("secret-value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.putKV(t, "ConsulManager/jms/jms_info", map[string]any{
+		"url": st.jmsURL, "auth_type": accessKeyAuthType, "access_key_id": keyID, "access_key_secret": secret, "ver": "V3",
+	})
+	st.registerService(t, "vm-1", "app-01", "10.0.0.20", "prod", "linux")
+	if err := st.run(t); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.authHeaders) == 0 || !strings.HasPrefix(fake.authHeaders[0], "Signature ") {
+		t.Fatalf("Access Key authorization header = %q", fake.authHeaders)
 	}
 }
 
