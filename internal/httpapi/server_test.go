@@ -265,8 +265,11 @@ func TestJMSContracts(t *testing.T) {
 
 	_, cfg := f.request(t, http.MethodGet, "/api/jms/config", token, nil)
 	jmsCfg := cfg["jms_config"].(map[string]any)
-	if jmsCfg["url"] != "https://jumpserver.example.com" || jmsCfg["token"] != "demo-jumpserver-admin-token" || jmsCfg["ver"] != "V3" {
+	if jmsCfg["url"] != "https://jumpserver.example.com" || jmsCfg["auth_type"] != "access_key" || jmsCfg["access_key_id"] != "demo-jumpserver-access-key" || jmsCfg["secret_configured"] != true || jmsCfg["ver"] != "V3" {
 		t.Fatalf("jms config = %v", jmsCfg)
+	}
+	if _, present := jmsCfg["access_key_secret"]; present || jmsCfg["legacy_token_configured"] != false {
+		t.Fatalf("JMS secret was exposed: %v", jmsCfg)
 	}
 	if jmsCfg["linuxport"] != "22" || jmsCfg["linuxuid"] != "root" || jmsCfg["winport"] != "3389" {
 		t.Fatalf("jms ecs info = %v", jmsCfg)
@@ -282,7 +285,7 @@ func TestJMSContracts(t *testing.T) {
 	customJSON := `{"prod-web": {"linux": [["ssh/2222"], "root"]}}`
 	_, saved := f.request(t, http.MethodPost, "/api/jms/config", token, map[string]any{
 		"jms_config": map[string]any{
-			"url": "https://jumpserver.example.com", "token": "new-token", "ver": "V3",
+			"url": "https://jumpserver.example.com", "auth_type": "access_key", "access_key_id": "new-access-key", "access_key_secret": "new-access-secret", "ver": "V3",
 			"linuxport": "22", "linuxuid": "root", "winport": "3389", "winuid": "Administrator",
 			"custom_ecs_info": customJSON,
 		},
@@ -291,13 +294,83 @@ func TestJMSContracts(t *testing.T) {
 		t.Fatalf("save config = %v", saved)
 	}
 	_, reread := f.request(t, http.MethodGet, "/api/jms/config", token, nil)
-	if reread["jms_config"].(map[string]any)["token"] != "new-token" {
-		t.Fatalf("token did not round trip: %v", reread)
+	if reread["jms_config"].(map[string]any)["access_key_id"] != "new-access-key" {
+		t.Fatalf("Access Key ID did not round trip: %v", reread)
 	}
 	raw, ok := f.mock.GetKV("ConsulManager/jms/jms_info")
-	if !ok || bytes.Contains(raw, []byte("new-token")) {
-		t.Fatalf("JMS token was not encrypted in Consul: %s", raw)
+	if !ok || bytes.Contains(raw, []byte("new-access-key")) || bytes.Contains(raw, []byte("new-access-secret")) {
+		t.Fatalf("JMS Access Key credentials were not encrypted in Consul")
 	}
+}
+
+func TestJMSAccessKeySecretIsWriteOnlyAndCanBePreserved(t *testing.T) {
+	f := newFixture(t)
+	token := f.login(t)
+	_, saved := f.request(t, http.MethodPost, "/api/jms/config", token, map[string]any{
+		"jms_config": map[string]any{
+			"url": "https://jumpserver.example.com", "auth_type": "access_key", "access_key_id": "key-one", "access_key_secret": "secret-one", "ver": "V3",
+			"linuxport": "22", "linuxuid": "root", "winport": "3389", "winuid": "Administrator",
+		},
+	})
+	if saved["code"].(float64) != 20000 {
+		t.Fatalf("initial save = %v", saved)
+	}
+	rawBefore, ok := f.mock.GetKV("ConsulManager/jms/jms_info")
+	if !ok {
+		t.Fatal("missing jms_info")
+	}
+	_, preserved := f.request(t, http.MethodPost, "/api/jms/config", token, map[string]any{
+		"jms_config": map[string]any{
+			"url": "https://jumpserver.example.com", "auth_type": "access_key", "ver": "V3",
+			"linuxport": "22", "linuxuid": "root", "winport": "3389", "winuid": "Administrator",
+		},
+	})
+	if preserved["code"].(float64) != 20000 {
+		t.Fatalf("save without secret = %v", preserved)
+	}
+	rawAfter, ok := f.mock.GetKV("ConsulManager/jms/jms_info")
+	if !ok || bytes.Contains(rawAfter, []byte("secret-one")) {
+		t.Fatal("secret was missing or stored in plaintext")
+	}
+	var before, after map[string]any
+	if err := json.Unmarshal(rawBefore, &before); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(rawAfter, &after); err != nil {
+		t.Fatal(err)
+	}
+	if before["access_key_secret"] != after["access_key_secret"] {
+		t.Fatal("empty update rotated or cleared the configured secret")
+	}
+	_, read := f.request(t, http.MethodGet, "/api/jms/config", token, nil)
+	if body := read["jms_config"].(map[string]any); body["access_key_id"] != "key-one" || body["secret_configured"] != true {
+		t.Fatalf("write-only secret config = %v", body)
+	}
+}
+
+func TestJMSLegacyTokenMigrationDoesNotExposeToken(t *testing.T) {
+	f := newFixture(t)
+	token := f.login(t)
+	encrypted, err := f.cipher.Encrypt("legacy-token-must-not-leak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.mock.SetKV("ConsulManager/jms/jms_info", map[string]any{"url": "https://jumpserver.example.com", "token": encrypted, "ver": "V2"}); err != nil {
+		t.Fatal(err)
+	}
+	_, response := f.request(t, http.MethodGet, "/api/jms/config", token, nil)
+	body := response["jms_config"].(map[string]any)
+	if body["auth_type"] != "private_token_legacy" || body["legacy_token_configured"] != true {
+		t.Fatalf("legacy config = %v", body)
+	}
+	if _, exposed := body["token"]; exposed || strings.Contains(stringify(response), "legacy-token-must-not-leak") {
+		t.Fatalf("legacy token leaked in response: %v", response)
+	}
+}
+
+func stringify(value any) string {
+	raw, _ := json.Marshal(value)
+	return string(raw)
 }
 
 func TestJobUpdateAndDelete(t *testing.T) {

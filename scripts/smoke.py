@@ -62,7 +62,10 @@ def main():
     assert re.fullmatch(r"\d{2}\.\d{2}/\d{2}:\d{2}", row["nextime"]), row
 
     _, cfg = request(base, "GET", "/api/jms/config", token)
-    assert cfg["code"] == 20000 and cfg["jms_config"]["token"] == "demo-jumpserver-admin-token", cfg
+    jms_cfg = cfg["jms_config"]
+    assert cfg["code"] == 20000 and jms_cfg["auth_type"] == "access_key", cfg
+    assert jms_cfg["access_key_id"] == "demo-jumpserver-access-key" and jms_cfg["secret_configured"] is True, cfg
+    assert "access_key_secret" not in jms_cfg and "token" not in jms_cfg, cfg
 
     print("PASS: login, info, jobs, edit/cloud, nodes/res, jms/list, jms/config")
 

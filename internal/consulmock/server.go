@@ -291,12 +291,16 @@ func (s *Server) SeedDemo() error {
 	if err != nil {
 		return err
 	}
-	token, err := cipher.Encrypt("demo-jumpserver-admin-token")
+	accessKeyID, err := cipher.Encrypt("demo-jumpserver-access-key")
+	if err != nil {
+		return err
+	}
+	accessKeySecret, err := cipher.Encrypt("demo-jumpserver-access-secret")
 	if err != nil {
 		return err
 	}
 	seed["ConsulManager/jms/jms_info"] = map[string]any{
-		"url": "https://jumpserver.example.com", "token": token, "ver": "V3",
+		"url": "https://jumpserver.example.com", "auth_type": "access_key", "access_key_id": accessKeyID, "access_key_secret": accessKeySecret, "ver": "V3",
 	}
 	for path, value := range seed {
 		if err := s.SetKV(path, value); err != nil {
