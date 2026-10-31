@@ -1,11 +1,14 @@
 package pve
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -46,11 +49,55 @@ func TestNewClientRejectsCleartextAPIURL(t *testing.T) {
 	}
 }
 
-func TestQATLSBoundaryRejectsVerificationBypass(t *testing.T) {
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // Deliberately verifies the rejection boundary.
-	_, err := NewClient(Credentials{APIBaseURL: "https://pve.example:8006/api2/json", TokenID: "id", TokenSecret: "secret"}, IPSelection{}, client)
+func TestTLSVerificationModes(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api2/json/cluster/resources" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":[]}`)
+	}))
+	defer server.Close()
+
+	base := Credentials{APIBaseURL: server.URL + "/api2/json", TokenID: "reader@pve!sync", TokenSecret: "token-secret"}
+	defaultClient, err := NewClient(base, IPSelection{}, http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := defaultClient.ListQEMUVMs(context.Background()); err == nil {
+		t.Fatal("default TLS verification accepted a self-signed certificate")
+	}
+
+	trustedClient, err := NewClient(base, IPSelection{}, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trustedClient.ListQEMUVMs(context.Background()); err != nil {
+		t.Fatalf("trusted private CA request failed: %v", err)
+	}
+
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	disabled := false
+	insecureClient, err := NewClient(Credentials{APIBaseURL: base.APIBaseURL, TokenID: base.TokenID, TokenSecret: base.TokenSecret, TLSVerify: &disabled}, IPSelection{}, http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := insecureClient.ListQEMUVMs(context.Background()); err != nil {
+		t.Fatalf("explicit TLS override did not accept self-signed HTTPS: %v", err)
+	}
+	if got := logs.String(); !strings.Contains(got, "TLS certificate verification disabled") || strings.Contains(got, base.TokenSecret) || strings.Contains(got, base.TokenID) || strings.Contains(got, "Authorization") {
+		t.Fatalf("TLS override warning leaked credentials or was missing: %q", got)
+	}
+
+	if defaultClient.http.Transport == http.DefaultTransport || insecureClient.http.Transport == http.DefaultTransport || defaultClient.http.Transport == insecureClient.http.Transport {
+		t.Fatal("PVE accounts must use independent cloned transports")
+	}
+	_, err = NewClient(Credentials{APIBaseURL: "http://pve.example:8006/api2/json", TokenID: "id", TokenSecret: "secret", TLSVerify: &disabled}, IPSelection{}, http.DefaultClient)
 	if err == nil {
-		t.Fatal("NewClient accepted a client that disables TLS certificate/hostname verification")
+		t.Fatal("TLS override accepted a cleartext HTTP API URL")
 	}
 }
 

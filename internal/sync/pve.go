@@ -32,6 +32,7 @@ type pveAccount struct {
 	APIBaseURL  string          `json:"api_base_url"`
 	TokenID     string          `json:"token_id"`
 	TokenSecret string          `json:"token_secret"`
+	TLSVerify   *bool           `json:"tls_verify"`
 	Cluster     string          `json:"cluster"`
 	IPSelection pve.IPSelection `json:"ip_selection"`
 }
@@ -66,7 +67,7 @@ func (s *PVE) ECS(ctx context.Context, vendor, account, region string, _ bool) e
 	if err != nil {
 		return fmt.Errorf("decrypt PVE token secret: %w", err)
 	}
-	client, err := s.newPVE(pve.Credentials{APIBaseURL: cfg.APIBaseURL, TokenID: cfg.TokenID, TokenSecret: secret}, cfg.IPSelection, s.http)
+	client, err := s.newPVE(pve.Credentials{APIBaseURL: cfg.APIBaseURL, TokenID: cfg.TokenID, TokenSecret: secret, TLSVerify: cfg.TLSVerify}, cfg.IPSelection, s.http)
 	if err != nil {
 		return err
 	}

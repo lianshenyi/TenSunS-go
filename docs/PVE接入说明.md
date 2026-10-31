@@ -1,12 +1,14 @@
 # Proxmox VE 接入与同步
 
-本期支持 `vendor=pve`，展示名为 `Proxmox VE`，仅发现 QEMU VM。接入地址必须是完整 HTTPS API 基地址，例如 `https://pve.example:8006/api2/json`。使用独立只读服务账号的 privsep API Token，不支持长期保存账号密码。客户端只接受标准 `*http.Transport`，拒绝明文 HTTP、`InsecureSkipVerify=true` 和不可审计的自定义 transport；因此生产环境必须配置受信任 CA 与可匹配的主机名。
+本期支持 `vendor=pve`，展示名为 `Proxmox VE`，仅发现 QEMU VM。接入地址必须是完整 HTTPS API 基地址，例如 `https://pve.example:8006/api2/json`。使用独立只读服务账号的 privsep API Token，不支持长期保存账号密码。
 
 将以下 JSON 写入 `ConsulManager/assets/pve/api/{account}`。`token_secret` 必须使用项目现有 AES-256-CBC 加密；不得提交、记录或回显明文 Token。
 
 ```json
-{"api_base_url":"https://pve.example:8006/api2/json","token_id":"reader@pve!tensuns","token_secret":"<AES encrypted>","cluster":"lab-cluster","ip_selection":{"nic_priority":["ens18"],"cidr_priority":["10.0.0.0/8"]}}
+{"api_base_url":"https://pve.example:8006/api2/json","token_id":"reader@pve!tensuns","token_secret":"<AES encrypted>","tls_verify":true,"cluster":"lab-cluster","ip_selection":{"nic_priority":["ens18"],"cidr_priority":["10.0.0.0/8"]}}
 ```
+
+`tls_verify` 缺失或为 `true` 时，客户端校验证书链及主机名；这是默认值。仅当该字段显式为 `false` 时才允许连接自签证书/私有 CA 的 HTTPS 端点；HTTP 始终被拒绝。每个账户均克隆独立的 TLS Transport，绝不修改或复用全局 Transport。关闭校验会记录不包含 Token、Secret 或 Authorization 的安全告警。生产环境应优先将企业私有 CA 导入容器/系统信任链，而不是关闭校验。
 
 任务沿用既有格式：资源组 `pve/{account}/group`，ECS `pve/{account}/ecs/{cluster}`，JMS `pve/{account}/jms`。`region` 是集群名，VM 所在 PVE 节点写入 ECS Meta 的 `node` 与 `group`。
 

@@ -40,10 +40,10 @@ func TestPVEECSSyncRegistersUsableGuestIPsAndRecordsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.PutKV(context.Background(), "ConsulManager/assets/pve/api/lab", map[string]any{"api_base_url": pveServer.URL + "/api2/json", "token_id": "reader@pve!sync", "token_secret": secret, "cluster": "lab-cluster", "ip_selection": map[string]any{"cidr_priority": []string{"10.0.0.0/8"}}}); err != nil {
+	if err := st.PutKV(context.Background(), "ConsulManager/assets/pve/api/lab", map[string]any{"api_base_url": pveServer.URL + "/api2/json", "token_id": "reader@pve!sync", "token_secret": secret, "tls_verify": false, "cluster": "lab-cluster", "ip_selection": map[string]any{"cidr_priority": []string{"10.0.0.0/8"}}}); err != nil {
 		t.Fatal(err)
 	}
-	service := NewPVE(st, cipher, pveServer.Client())
+	service := NewPVE(st, cipher, http.DefaultClient)
 	if err := service.ECS(context.Background(), "pve", "lab", "lab-cluster", false); err != nil {
 		t.Fatal(err)
 	}

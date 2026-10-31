@@ -4,8 +4,10 @@ package pve
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -19,6 +21,9 @@ type Credentials struct {
 	APIBaseURL  string
 	TokenID     string
 	TokenSecret string
+	// TLSVerify is nil for legacy account records and means verification remains
+	// enabled. Only an explicit false permits a self-signed HTTPS endpoint.
+	TLSVerify *bool
 }
 
 // IPSelection controls deterministic IPv4 selection when a guest has several
@@ -66,17 +71,22 @@ func NewClient(creds Credentials, selection IPSelection, client *http.Client) (*
 	if strings.TrimSpace(creds.TokenID) == "" || strings.TrimSpace(creds.TokenSecret) == "" {
 		return nil, fmt.Errorf("PVE API token ID and secret are required")
 	}
-	secureClient, err := secureHTTPClient(client)
+	tlsVerify := creds.TLSVerify == nil || *creds.TLSVerify
+	secureClient, err := secureHTTPClient(client, tlsVerify)
 	if err != nil {
 		return nil, err
+	}
+	if !tlsVerify {
+		// Deliberately log only the destination host. API tokens and secrets must
+		// never reach diagnostics, including when TLS verification is overridden.
+		slog.Warn("PVE TLS certificate verification disabled", "host", base.Host)
 	}
 	return &Client{base: base, tokenID: creds.TokenID, tokenSecret: creds.TokenSecret, http: secureClient, selection: selection}, nil
 }
 
-// secureHTTPClient only accepts the standard transport so TLS verification can
-// be inspected. A custom RoundTripper could silently bypass certificate or
-// hostname verification, which is unsafe because this client sends API tokens.
-func secureHTTPClient(client *http.Client) (*http.Client, error) {
+// secureHTTPClient makes an independent client and transport for one account.
+// A custom RoundTripper cannot be inspected or safely cloned, so it is refused.
+func secureHTTPClient(client *http.Client, tlsVerify bool) (*http.Client, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -86,9 +96,9 @@ func secureHTTPClient(client *http.Client) (*http.Client, error) {
 	}
 	standardTransport, ok := transport.(*http.Transport)
 	if !ok {
-		return nil, fmt.Errorf("PVE HTTP client must use a standard transport with TLS verification enabled")
+		return nil, fmt.Errorf("PVE HTTP client must use a standard transport")
 	}
-	if standardTransport.TLSClientConfig != nil && standardTransport.TLSClientConfig.InsecureSkipVerify {
+	if tlsVerify && standardTransport.TLSClientConfig != nil && standardTransport.TLSClientConfig.InsecureSkipVerify {
 		return nil, fmt.Errorf("PVE HTTP client must not disable TLS certificate or hostname verification")
 	}
 
@@ -96,7 +106,10 @@ func secureHTTPClient(client *http.Client) (*http.Client, error) {
 	copyTransport := standardTransport.Clone()
 	if copyTransport.TLSClientConfig != nil {
 		copyTransport.TLSClientConfig = copyTransport.TLSClientConfig.Clone()
+	} else {
+		copyTransport.TLSClientConfig = &tls.Config{}
 	}
+	copyTransport.TLSClientConfig.InsecureSkipVerify = !tlsVerify //nolint:gosec // REQ-PVE-006 permits this only for an explicit account setting.
 	copyClient.Transport = copyTransport
 	return &copyClient, nil
 }
