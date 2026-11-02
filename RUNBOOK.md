@@ -93,3 +93,28 @@ The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `a
 - If API startup fails, confirm Consul is listening at `CONSUL_ADDR` and its KV data has been seeded.
 - If JumpServer returns 401, verify the Access Key has not been revoked, its source-IP allowlist includes this API host, and both system clocks are NTP-synchronized. Do not paste a Secret or legacy Token into logs, shell history, or issue comments.
 - If `npm install` fails on an old runtime, use Node 14+ for this Vue CLI 4 project.
+
+## 第三方手工主机
+
+第三方主机复用已鉴权的 `GET /api/edit/cloud?vendor=third_party` 和
+`POST /api/edit/commit`；保存请求为完整的
+`{"vendor":"third_party","hosts":[...]}` 集合，空集合会删除所有第三方
+Service。没有独立 CRUD、KV 或调度任务。主机的名称、规格、IP 与端口必填，
+支持 IPv4/IPv6；空账户规范化为 `default`，region 为 `global`。
+
+在 **云主机列表 → 编辑云资源** 选择 **第三方** 后，界面会先加载所有账户
+的完整基线。编辑或删除行后选择 **保存完整集合**。不可按账户过滤后提交，
+否则全量覆盖会删除未提交的主机。前端不使用 mock。
+
+本功能已在隔离 Consul 1.19.2 环境验证跨账户读取、IPv4/IPv6 TCP Service、
+保留 account/project、完整集合覆盖删除和无 `ConsulManager/jobs/third_party/`
+记录。前端定向验证命令：
+
+```bash
+cd vue-consul
+npx vue-cli-service test:unit tests/unit/utils/third-party-hosts.spec.js
+npm run build:prod
+```
+
+移动端验证使用 `375×812`：编辑弹窗宽度为视口减 24px，第三方表格保留列
+最小宽度并可横向滚动；在 `1280×812` 仍使用桌面的 45% 弹窗宽度。
