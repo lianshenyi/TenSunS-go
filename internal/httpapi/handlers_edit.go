@@ -2,14 +2,21 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/lianshenyi/TenSunS-go/internal/config"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
+	"github.com/lianshenyi/TenSunS-go/internal/store"
 )
 
 func (s *Server) handleEdit(w http.ResponseWriter, r *http.Request) {
@@ -63,15 +70,45 @@ type editJob struct {
 	TLSVerify   *bool   `json:"tls_verify"`
 }
 
+const (
+	thirdPartyVendor = "third_party"
+	thirdPartyRegion = "global"
+	defaultAccount   = "default"
+)
+
+type thirdPartyHost struct {
+	Name    string `json:"name"`
+	Spec    string `json:"spec"`
+	IP      string `json:"ip"`
+	Port    int    `json:"port"`
+	Account string `json:"account"`
+	Project string `json:"project"`
+}
+
 // editCommit implements POST /api/edit/commit for every registered vendor:
 // PVE and the four cloud vendors. Unknown vendors are an explicit error, not
 // the migration placeholder.
 func (s *Server) editCommit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		EditJob editJob `json:"editJob"`
+		Vendor  string  `json:"vendor"`
+		Hosts   []thirdPartyHost `json:"hosts"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		s.businessError(w, err)
+		return
+	}
+	if req.Vendor == thirdPartyVendor {
+		hosts, err := validateThirdPartyHosts(req.Hosts)
+		if err != nil {
+			s.validationError(w, err.Error())
+			return
+		}
+		if err := s.replaceThirdPartyServices(r, hosts); err != nil {
+			s.businessError(w, fmt.Errorf("replace third-party ECS services: %w", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": map[string]int{"count": len(hosts)}})
 		return
 	}
 	job := req.EditJob
@@ -87,6 +124,78 @@ func (s *Server) editCommit(w http.ResponseWriter, r *http.Request) {
 		"code": 20000,
 		"data": job.Vendor + "/" + job.Account + "/" + job.Region + "：编辑成功！",
 	})
+}
+
+func validateThirdPartyHosts(hosts []thirdPartyHost) ([]thirdPartyHost, error) {
+	seenNames := make(map[string]struct{}, len(hosts))
+	seenEndpoints := make(map[string]struct{}, len(hosts))
+	for index := range hosts {
+		host := &hosts[index]
+		host.Name = strings.TrimSpace(host.Name)
+		host.Spec = strings.TrimSpace(host.Spec)
+		host.IP = strings.TrimSpace(host.IP)
+		host.Account = strings.TrimSpace(host.Account)
+		host.Project = strings.TrimSpace(host.Project)
+		if host.Name == "" || host.Spec == "" || host.IP == "" || host.Port == 0 {
+			return nil, fmt.Errorf("第%d台机器的名称、规格、IP和端口不能为空", index+1)
+		}
+		address, err := netip.ParseAddr(host.IP)
+		if err != nil {
+			return nil, fmt.Errorf("第%d台机器的IP格式错误", index+1)
+		}
+		if host.Port < 1 || host.Port > 65535 {
+			return nil, fmt.Errorf("第%d台机器的端口必须在1-65535之间", index+1)
+		}
+		host.IP = address.String()
+		if host.Account == "" {
+			host.Account = defaultAccount
+		}
+		if _, found := seenNames[host.Name]; found {
+			return nil, fmt.Errorf("机器名称重复：%s", host.Name)
+		}
+		seenNames[host.Name] = struct{}{}
+		endpoint := net.JoinHostPort(host.IP, strconv.Itoa(host.Port))
+		if _, found := seenEndpoints[endpoint]; found {
+			return nil, fmt.Errorf("机器IP和端口重复：%s", endpoint)
+		}
+		seenEndpoints[endpoint] = struct{}{}
+	}
+	return hosts, nil
+}
+
+func (s *Server) replaceThirdPartyServices(r *http.Request, hosts []thirdPartyHost) error {
+	existing, err := s.store.Services(r.Context(), "")
+	if err != nil { return fmt.Errorf("list existing services: %w", err) }
+	current := make(map[string]struct{}, len(hosts))
+	for _, host := range hosts {
+		id := thirdPartyServiceID(host.Name)
+		current[id] = struct{}{}
+		group := host.Project
+		if group == "" { group = "手工录入" }
+		meta := map[string]string{"iid": id, "name": host.Name, "region": thirdPartyRegion, "group": group,
+			"instance": net.JoinHostPort(host.IP, strconv.Itoa(host.Port)), "account": host.Account,
+			"vendor": "第三方", "project": host.Project, "os": "linux", "cpu": host.Spec, "mem": "无", "exp": "无", "stat": "on"}
+		if err := s.store.Register(r.Context(), store.ServiceRegistration{ID: id, Name: thirdPartyVendor + "_" + host.Account + "_ecs", Address: host.IP, Port: host.Port,
+			Tags: []string{"ON", "linux", thirdPartyRegion}, Meta: meta,
+			Check: &store.ServiceCheck{TCP: net.JoinHostPort(host.IP, strconv.Itoa(host.Port)), Interval: "60s"}}); err != nil {
+			return fmt.Errorf("register service %q: %w", id, err)
+		}
+	}
+	for id, service := range existing {
+		if !isThirdPartyService(service) { continue }
+		if _, found := current[id]; found { continue }
+		if err := s.store.Deregister(r.Context(), id); err != nil { return fmt.Errorf("deregister stale service %q: %w", id, err) }
+	}
+	return nil
+}
+
+func thirdPartyServiceID(name string) string {
+	digest := sha256.Sum256([]byte(name))
+	return thirdPartyVendor + "-" + hex.EncodeToString(digest[:])
+}
+
+func (s *Server) validationError(w http.ResponseWriter, message string) {
+	writeJSON(w, http.StatusOK, map[string]any{"code": 40000, "data": message})
 }
 
 // commitEdit mirrors the legacy Python edit_cloud semantics: credential fields
@@ -325,6 +434,15 @@ func (s *Server) overlayCloudCredentials(ctx context.Context, job editJob) error
 }
 
 func (s *Server) editCloud(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("vendor") == thirdPartyVendor {
+		hosts, err := s.loadThirdPartyHosts(r)
+		if err != nil {
+			s.businessError(w, fmt.Errorf("load third-party ECS services: %w", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": map[string]any{"hosts": hosts}})
+		return
+	}
 	specs, err := s.loadJobSpecs(r)
 	if err != nil {
 		s.businessError(w, err)
@@ -347,6 +465,37 @@ func (s *Server) editCloud(w http.ResponseWriter, r *http.Request) {
 		result[vendor] = sortedKeys(accounts)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "cloud_dict": result})
+}
+
+// loadThirdPartyHosts reconstructs the full cross-account edit baseline so a
+// subsequent replacement cannot silently remove hosts in another account.
+func (s *Server) loadThirdPartyHosts(r *http.Request) ([]thirdPartyHost, error) {
+	services, err := s.store.Services(r.Context(), "")
+	if err != nil {
+		return nil, err
+	}
+	hosts := make([]thirdPartyHost, 0)
+	for _, service := range services {
+		if !isThirdPartyService(service) {
+			continue
+		}
+		account := strings.TrimSpace(service.Meta["account"])
+		if account == "" {
+			account = defaultAccount
+		}
+		hosts = append(hosts, thirdPartyHost{Name: service.Meta["name"], Spec: service.Meta["cpu"], IP: service.Address, Port: service.Port, Account: account, Project: service.Meta["project"]})
+	}
+	sort.Slice(hosts, func(i, j int) bool {
+		if hosts[i].Account != hosts[j].Account {
+			return hosts[i].Account < hosts[j].Account
+		}
+		return hosts[i].Name < hosts[j].Name
+	})
+	return hosts, nil
+}
+
+func isThirdPartyService(service store.Service) bool {
+	return service.Meta["vendor"] == "第三方" && strings.HasPrefix(service.Name, thirdPartyVendor+"_")
 }
 
 func (s *Server) editFind(w http.ResponseWriter, r *http.Request) {
