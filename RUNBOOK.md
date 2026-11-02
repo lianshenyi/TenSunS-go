@@ -21,7 +21,20 @@ Run `make smoke` from the repository root for the integrated compatibility check
 
 - `CONSUL_ADDR=127.0.0.1:8500`
 - `TENSUNS_API=http://127.0.0.1:2026` (optional Vue dev proxy override)
-- `scheduler_disabled=1` (recommended while cloud adapters are unavailable)
+- `scheduler_disabled=1` (use while validating or before configuring a cloud account)
+
+AWS account credentials are stored only in Consul at
+`ConsulManager/assets/awscloud/aksk/<account>` in the existing AES-encrypted
+`ak`/`sk` shape. The process decrypts them only while creating the AWS SDK
+client; do not place plaintext cloud credentials in environment variables.
+
+Tencent Cloud and Huawei Cloud use the same AES-encrypted `ak`/`sk` shape at
+`ConsulManager/assets/tencent_cloud/aksk/<account>` and
+`ConsulManager/assets/huaweicloud/aksk/<account>`. Grant each account
+read-only CVM/CDB/Redis/DCDB or ECS/RDS/DCS/EPS/BSS permissions before enabling
+its jobs. Tencent resource-group discovery calls DCDB in `ap-guangzhou`;
+Huawei enterprise projects and ECS expiry dates call EPS in `cn-north-4` and
+BSS in `cn-north-1`, respectively.
 
 Use a local Consul only. Do not put cloud credentials, JumpServer tokens, or production passwords in source control.
 
@@ -34,6 +47,21 @@ cd vue-consul
 npm run build:prod
 npm run test:ci
 ```
+
+### Go 1.22 verification plan
+
+The module intentionally declares `go 1.22` and has no `toolchain` directive.
+Run the backend gate in a Go 1.22 environment before merging; a local Docker
+engine can provide that environment without changing the developer toolchain:
+
+```bash
+docker run --rm -v "$PWD:/src" -w /src golang:1.22 \
+  sh -ec 'go mod tidy -go=1.22 && git diff --exit-code -- go.mod go.sum && go test ./... && go vet ./... && go build ./cmd/tensuns'
+```
+
+CI should run the identical four Go commands on a pinned Go 1.22 runner. It
+must fail if `go mod tidy -go=1.22` changes `go.mod` or `go.sum`; this catches
+an accidental SDK upgrade that raises the minimum toolchain version.
 
 ## Authenticated identity check
 
@@ -51,4 +79,11 @@ The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `a
 
 - If the Vue app cannot call `/api`, start the Go API first and check `TENSUNS_API` / `vue.config.js` proxy settings.
 - If API startup fails, confirm Consul is listening at `CONSUL_ADDR` and its KV data has been seeded.
+- If an AWS job writes a failure record, check its `msg` in
+  `ConsulManager/record/jobs/awscloud/<account>/<type>/<region>` and confirm
+  the account has least-privilege permissions for EC2, RDS, and ElastiCache.
+- For Tencent or Huawei failures, inspect the equivalent provider record and
+  verify the selected region and read-only API permissions (including DCDB,
+  EPS, and BSS for project/expiry discovery); credentials are never written to
+  application logs.
 - If `npm install` fails on an old runtime, use Node 14+ for this Vue CLI 4 project.
