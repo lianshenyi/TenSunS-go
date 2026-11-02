@@ -18,29 +18,25 @@ function validationError(validator, value) {
 }
 
 describe('cloud account create form', () => {
-  it('allows blank third-party credentials but keeps optional values character-safe', () => {
-    const { state } = createForm('third_party')
-    const validateCredential = state.createRules.ak[0].validator
-
-    expect(validationError(validateCredential, '')).toBeUndefined()
-    expect(validationError(validateCredential, 'partner key').message).toMatch('不能含有空格')
-    expect(validationError(validateCredential, 'partner-key')).toBeUndefined()
-  })
-
   it('requires credentials for a cloud vendor and preserves character validation', () => {
     const { state } = createForm('alicloud')
-    const validateCredential = state.createRules.sk[0].validator
+    const validateCredential = state.createRules.sk[1].validator
 
-    expect(validationError(validateCredential, '').message).toBe('此为必填项')
+    expect(state.createRules.sk[0]).toMatchObject({ required: true, message: '此为必填项' })
     expect(validationError(validateCredential, 'secret/key').message).toMatch('不能含有空格')
   })
 
-  it('switches third-party accounts to the manual, required region field', () => {
-    const { vm, state } = createForm('third_party')
+  it('routes third-party creation to the full host-set editor', () => {
+    const { vm } = createForm('third_party')
+    vm.newFormVisible = true
+    vm.editFormVisible = false
+    vm.loadThirdPartyHosts = jest.fn()
 
     expect(Jobs.computed.isThirdPartyCloudAccount.call(vm)).toBe(true)
-    expect(state.createRules.region[0].required).toBe(true)
-    Jobs.methods.handleCreateVendorChange.call(vm, 'third_party')
-    expect(vm.ecsJob.region).toEqual([])
+    Jobs.methods.openThirdPartyEditor.call(vm)
+    expect(vm.newFormVisible).toBe(false)
+    expect(vm.editFormVisible).toBe(true)
+    expect(vm.editJob.vendor).toBe('third_party')
+    expect(vm.loadThirdPartyHosts).toHaveBeenCalledTimes(1)
   })
 })

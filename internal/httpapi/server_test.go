@@ -146,6 +146,27 @@ func TestCreateCloudAccountWithFakeProvider(t *testing.T) {
 	}
 }
 
+func TestCreateThirdPartyRedirectsToHostEditorWithoutTasks(t *testing.T) {
+	f := newFixtureWithProvider(t, httpFakeProvider{}, nil)
+	token := f.login(t)
+	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+		"job_dict": map[string]any{
+			"dialogStatus": "create", "vendor": "third_party", "account": "partner",
+			"restype": []string{"group", "ecs"}, "region": []string{"partner-region"},
+			"proj_interval": 60, "ecs_interval": 10,
+		},
+	})
+	if body["code"] != float64(40000) || body["data"] != "第三方主机请通过“编辑云资源”维护，不创建同步任务" {
+		t.Fatalf("create response = %v", body)
+	}
+	if _, found := f.mock.GetKV("ConsulManager/jobs/third_party/partner/group"); found {
+		t.Fatal("third-party cloud-account request created a group task")
+	}
+	if _, found := f.mock.GetKV("ConsulManager/jobs/third_party/partner/ecs/partner-region"); found {
+		t.Fatal("third-party cloud-account request created an ECS task")
+	}
+}
+
 // TestCreatePVECloudAccount drives the real POST /api/jobs path with the real
 // sync.PVE service, so the creator-written credential KV is consumed by the
 // exact reader that production uses.

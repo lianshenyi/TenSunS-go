@@ -173,6 +173,10 @@ func (s *Server) mutateJob(w http.ResponseWriter, r *http.Request) {
 			s.businessError(w, fmt.Errorf("decode create job request: %w", err))
 			return
 		}
+		if create.Vendor == thirdPartyVendor {
+			s.validationError(w, "第三方主机请通过“编辑云资源”维护，不创建同步任务")
+			return
+		}
 		if err := s.creator.Create(r.Context(), create); err != nil {
 			s.businessError(w, err)
 			return

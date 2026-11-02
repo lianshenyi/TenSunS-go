@@ -163,7 +163,14 @@
           </span>
           <span v-if="ecsJob.vendor === 'alicloud' || ecsJob.vendor === 'tencent_cloud'">已支持采集ECS标签(key不能是中文)</span>
         </el-form-item>
-        <el-form-item prop="account">
+        <el-alert
+          v-if="isThirdPartyCloudAccount"
+          title="第三方主机不创建云同步任务，请前往第三方主机维护并录入名称、规格、IP 和端口。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
+        <el-form-item v-if="!isThirdPartyCloudAccount" prop="account">
           <span slot="label">
             <span class="span-box">
               <span>账户</span>
@@ -179,7 +186,7 @@
           </span>
           <el-input v-model="ecsJob.account" />
         </el-form-item>
-        <template v-if="ecsJob.vendor === 'pve'">
+        <template v-if="!isThirdPartyCloudAccount && ecsJob.vendor === 'pve'">
           <el-form-item label="PVE API 地址" prop="api_base_url">
             <el-input v-model="ecsJob.api_base_url" placeholder="https://pve.example:8006/api2/json" />
           </el-form-item>
@@ -194,19 +201,16 @@
             <div class="pve-help">默认校验证书和主机名。仅在内网自签证书或私有 CA 暂无法受信任时关闭；始终使用 HTTPS。</div>
           </el-form-item>
         </template>
-        <el-form-item v-else label="Access Key" prop="ak">
+        <el-form-item v-else-if="!isThirdPartyCloudAccount" label="Access Key" prop="ak">
           <el-input v-model="ecsJob.ak" placeholder="请输AccessKey ID" />
         </el-form-item>
-        <el-form-item v-if="ecsJob.vendor !== 'pve'" label="Secret Key" prop="sk">
+        <el-form-item v-if="ecsJob.vendor !== 'pve' && !isThirdPartyCloudAccount" label="Secret Key" prop="sk">
           <el-input v-model="ecsJob.sk" placeholder="请输入AccessKey Secret" show-password />
         </el-form-item>
-        <el-form-item v-if="ecsJob.vendor === 'pve'" label="PVE 集群" prop="region">
+        <el-form-item v-if="!isThirdPartyCloudAccount && ecsJob.vendor === 'pve'" label="PVE 集群" prop="region">
           <el-input v-model="ecsJob.region[0]" placeholder="请输入 PVE 集群标识" />
         </el-form-item>
-        <el-form-item v-else-if="isThirdPartyCloudAccount" label="区域" prop="region">
-          <el-input v-model.trim="ecsJob.region[0]" placeholder="请输入区域标识" />
-        </el-form-item>
-        <el-form-item v-else label="区域" prop="region">
+        <el-form-item v-else-if="!isThirdPartyCloudAccount" label="区域" prop="region">
           <el-select v-model="ecsJob.region" filterable multiple collapse-tags placeholder="请选择">
             <el-option
               v-for="item in regions[ecsJob.vendor]"
@@ -217,7 +221,7 @@
           </el-select>
         </el-form-item>
 
-        <el-form-item label="资源类型">
+        <el-form-item v-if="!isThirdPartyCloudAccount" label="资源类型">
           <el-checkbox-group v-model="restype">
             <el-checkbox label="group" disabled>分组</el-checkbox>
             <el-checkbox label="ecs">ECS</el-checkbox>
@@ -225,10 +229,10 @@
             <el-checkbox v-if="ecsJob.vendor !== 'pve'" label="redis">REDIS</el-checkbox>
           </el-checkbox-group>
         </el-form-item>
-        <el-form-item v-if="ecsJob.vendor !== 'pve' && restype.includes('ecs')" label="优先获取外网IP" prop="isextip">
+        <el-form-item v-if="!isThirdPartyCloudAccount && ecsJob.vendor !== 'pve' && restype.includes('ecs')" label="优先获取外网IP" prop="isextip">
           <el-checkbox v-model="ecsJob.isextip">(仅支持ECS)</el-checkbox>
         </el-form-item>
-        <el-form-item prop="proj_interval">
+        <el-form-item v-if="!isThirdPartyCloudAccount" prop="proj_interval">
           <span slot="label">
             <span class="span-box">
               <span>分组同步间隔(分钟)</span>
@@ -244,25 +248,28 @@
           </span>
           <el-input v-model="ecsJob.proj_interval" />
         </el-form-item>
-        <el-form-item v-if="restype.includes('ecs')" label="ECS同步间隔(分钟)" prop="ecs_interval">
+        <el-form-item v-if="!isThirdPartyCloudAccount && restype.includes('ecs')" label="ECS同步间隔(分钟)" prop="ecs_interval">
           <el-input v-model="ecsJob.ecs_interval" />
         </el-form-item>
-        <el-form-item v-if="restype.includes('rds')" label="MySQL同步间隔(分钟)" prop="rds_interval">
+        <el-form-item v-if="!isThirdPartyCloudAccount && restype.includes('rds')" label="MySQL同步间隔(分钟)" prop="rds_interval">
           <el-input v-model="ecsJob.rds_interval" />
         </el-form-item>
-        <el-form-item v-if="restype.includes('redis')" label="REDIS同步间隔(分钟)" prop="redis_interval">
+        <el-form-item v-if="!isThirdPartyCloudAccount && restype.includes('redis')" label="REDIS同步间隔(分钟)" prop="redis_interval">
           <el-input v-model="ecsJob.redis_interval" />
         </el-form-item>
       </el-form>
 
       <div slot="footer" class="dialog-footer">
-        <el-button type="primary" @click="createAndNew()">
+        <el-button v-if="!isThirdPartyCloudAccount" type="primary" @click="createAndNew()">
           确认并新增
         </el-button>
         <el-button @click="newFormVisible = false">
           取消
         </el-button>
-        <el-button type="primary" @click="createData()">
+        <el-button v-if="isThirdPartyCloudAccount" type="primary" @click="openThirdPartyEditor()">
+          前往第三方主机维护
+        </el-button>
+        <el-button v-else type="primary" @click="createData()">
           确认
         </el-button>
       </div>
@@ -450,18 +457,6 @@ export default {
         callback()
       }
     }
-    const validateCreateCredential = (rule, value, callback) => {
-      const credential = String(value || '')
-      if (this.ecsJob.vendor === 'third_party' && credential === '') {
-        callback()
-        return
-      }
-      if (credential === '') {
-        callback(new Error('此为必填项'))
-        return
-      }
-      validateInput(rule, credential, callback)
-    }
     const rules = {
       vendor: [{ required: true, message: '此为必填项', trigger: 'change' },
         { validator: validateInput, trigger: ['blur', 'change'] }],
@@ -495,11 +490,7 @@ export default {
       restype: ['group', 'ecs'],
       query: { vendor: '', account: '', itype: '' },
       rules,
-      createRules: {
-        ...rules,
-        ak: [{ validator: validateCreateCredential, trigger: ['blur', 'change'] }],
-        sk: [{ validator: validateCreateCredential, trigger: ['blur', 'change'] }]
-      },
+      createRules: rules,
       vendors: [{ value: 'alicloud', label: '阿里云' },
         { value: 'tencent_cloud', label: '腾讯云' },
         { value: 'huaweicloud', label: '华为云' },
@@ -710,6 +701,12 @@ export default {
     handleCreateVendorChange(vendor) {
       this.ecsJob.region = []
       if (vendor === 'pve') this.restype = ['group', 'ecs']
+    },
+    openThirdPartyEditor() {
+      this.newFormVisible = false
+      this.editJob = { vendor: 'third_party', akskswitch: false, pveCredentialSwitch: false, ak: '', sk: '', api_base_url: '', token_id: '', token_secret: '', tls_verify: true, region: '', account: '', restype: ['group'], proj_interval: 60, ecs_interval: 10, rds_interval: 20, redis_interval: 20, isextip: false }
+      this.editFormVisible = true
+      this.loadThirdPartyHosts()
     },
     handleEditVendorChange() {
       this.editJob.region = ''

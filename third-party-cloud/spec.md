@@ -34,7 +34,7 @@
 
 ### 4.1 Vue 2 + Element UI 编辑页
 
-职责：增加 `third_party` 选项、维护可增删的机器行，并在提交前执行 §7 校验；不引入独立页面或 API client。
+职责：增加 `third_party` 选项、维护可增删的机器行，并在提交前执行 §7 校验；不引入独立页面或 API client。“新增云资源”选择第三方时只跳转到完整集合编辑器，不调用 `/api/jobs` 创建云账户。
 
 ### 4.2 `internal/httpapi` 编辑 handler
 
@@ -98,6 +98,7 @@
 |---|---|---|---|
 | GET | `/api/edit/cloud?vendor=third_party` | 本期读取扩展 | 已鉴权；返回 `{"code":20000,"data":{"hosts":[...]}}`。从所有第三方 ECS Service 重建完整集合，含规范化 `account`（缺省 `default`）及可选 `project`，不得按账户 / 项目过滤。未带该 vendor 参数时保持原有 `cloud_dict` 语义。 |
 | POST | `/api/edit/commit` | 本期写入口 | 请求 `{"vendor":"third_party","hosts":[...]}`；`hosts` 是跨账户完整集合，成功返回 `{"code":20000,"data":{"count":N}}`。 |
+| POST | `/api/jobs`（`dialogStatus=create`、`vendor=third_party`） | 禁止 | 返回明确业务校验提示，不写 AK/SK、jobs 或 records；用于防御旧页面和直接调用。 |
 | POST | `/api/third-party/*` | 禁止 | 已被产品决策明确排除。 |
 
 仅当 `vendor` 为 `third_party` 时启用本期分支；其它 vendor 保持原来的未实现响应，避免隐式启用云同步任务编辑。
