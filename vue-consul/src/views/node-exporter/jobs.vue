@@ -265,13 +265,14 @@
       </div>
     </el-dialog>
 
-    <el-dialog title="编辑云资源" :visible.sync="editFormVisible" width="45%">
+    <el-dialog title="编辑云资源" :visible.sync="editFormVisible" width="45%" custom-class="cloud-resource-dialog">
       <el-form
         ref="dataForm"
         :rules="rules"
         :model="editJob"
         label-position="right"
         label-width="auto"
+        class="cloud-resource-form"
         style="width: 90%; margin-left: 1px;"
       >
         <el-form-item label="云厂商" prop="vendor">
@@ -280,6 +281,20 @@
           </el-select>
         </el-form-item>
 
+        <template v-if="editJob.vendor === 'third_party'">
+          <el-alert title="保存会以当前表格为完整集合覆盖第三方主机；删除行会移除对应主机。" type="warning" :closable="false" show-icon class="third-party-notice" />
+          <el-table v-loading="thirdPartyLoading" :data="thirdPartyHosts" border style="width: 100%" class="third-party-host-table">
+            <el-table-column label="名称" min-width="140"><template slot-scope="{row}"><el-input v-model="row.name" aria-label="机器名称" /></template></el-table-column>
+            <el-table-column label="规格" min-width="120"><template slot-scope="{row}"><el-input v-model="row.spec" placeholder="例如 2C4G" aria-label="机器规格" /></template></el-table-column>
+            <el-table-column label="IP" min-width="170"><template slot-scope="{row}"><el-input v-model="row.ip" placeholder="IPv4 或 IPv6" aria-label="IP 地址" /></template></el-table-column>
+            <el-table-column label="端口" width="110"><template slot-scope="{row}"><el-input v-model="row.port" type="number" min="1" max="65535" aria-label="端口" /></template></el-table-column>
+            <el-table-column label="账户" min-width="120"><template slot-scope="{row}"><el-input v-model="row.account" placeholder="留空为 default" aria-label="云账户" /></template></el-table-column>
+            <el-table-column label="项目" min-width="120"><template slot-scope="{row}"><el-input v-model="row.project" aria-label="项目归属" /></template></el-table-column>
+            <el-table-column label="操作" width="80" align="center"><template slot-scope="scope"><el-button type="text" @click="removeThirdPartyHost(scope.$index)">删除</el-button></template></el-table-column>
+          </el-table>
+          <el-button type="primary" plain icon="el-icon-plus" class="add-third-party-host" @click="addThirdPartyHost">添加机器</el-button>
+        </template>
+        <template v-else>
         <el-form-item label="账户" prop="account">
           <el-select v-model="editJob.account" placeholder="请选择" @change="handleEditAccountChange">
             <el-option v-for="item in cloud_dict[editJob.vendor]" :key="item" :label="item" :value="item" />
@@ -371,13 +386,17 @@
         <el-form-item v-if="editJob.restype.includes('redis')" label="REDIS同步间隔(分钟)" prop="redis_interval">
           <el-input v-model="editJob.redis_interval" />
         </el-form-item>
+        </template>
       </el-form>
 
       <div slot="footer" class="dialog-footer">
         <el-button @click="editFormVisible = false">
           取消
         </el-button>
-        <el-button type="primary" @click="editData(editJob)">
+        <el-button v-if="editJob.vendor === 'third_party'" type="primary" :loading="thirdPartyLoading" @click="saveThirdPartyHosts">
+          保存完整集合
+        </el-button>
+        <el-button v-else type="primary" @click="editData(editJob)">
           确认
         </el-button>
       </div>
@@ -410,7 +429,8 @@
 
 <script>
 import { getAllJobs, PostJob, DelJob, getGroup } from '@/api/node-exporter'
-import { getCloud, findGroup, PostEditJob } from '@/api/edit'
+import { getCloud, findGroup, PostEditJob, postThirdPartyHosts } from '@/api/edit'
+import { validateThirdPartyHosts } from '@/utils/third-party-hosts'
 export default {
   data() {
     const validateInput = (rule, value, callback) => {
@@ -463,7 +483,8 @@ export default {
         { value: 'tencent_cloud', label: '腾讯云' },
         { value: 'huaweicloud', label: '华为云' },
         { value: 'awscloud', label: 'AWS云' },
-        { value: 'pve', label: 'Proxmox VE' }],
+        { value: 'pve', label: 'Proxmox VE' },
+        { value: 'third_party', label: '第三方' }],
 
       regions: {
         awscloud: [
@@ -555,6 +576,8 @@ export default {
       ecsJob: this.newCloudJob(),
       editJob: { restype: ['group'] },
       cloud_dict: {},
+      thirdPartyHosts: [],
+      thirdPartyLoading: false,
       upjob: { jobid: '', interval: '' },
       newFormVisible: false,
       upFormVisible: false,
@@ -615,6 +638,38 @@ export default {
         this.listLoading = false
       })
     },
+    emptyThirdPartyHost() {
+      return { name: '', spec: '', ip: '', port: '', account: '', project: '' }
+    },
+    loadThirdPartyHosts() {
+      this.thirdPartyLoading = true
+      getCloud('third_party').then(response => {
+        const data = response.data || {}
+        this.thirdPartyHosts = Array.isArray(data.hosts) ? data.hosts : []
+        this.thirdPartyLoading = false
+      }, () => { this.thirdPartyLoading = false })
+    },
+    addThirdPartyHost() {
+      this.thirdPartyHosts.push(this.emptyThirdPartyHost())
+    },
+    removeThirdPartyHost(index) {
+      this.thirdPartyHosts.splice(index, 1)
+    },
+    saveThirdPartyHosts() {
+      const result = validateThirdPartyHosts(this.thirdPartyHosts)
+      if (!result.valid) {
+        this.$message({ message: result.message, type: 'error' })
+        return
+      }
+      this.thirdPartyHosts = result.hosts
+      this.thirdPartyLoading = true
+      postThirdPartyHosts(result.hosts).then(response => {
+        this.thirdPartyLoading = false
+        this.editFormVisible = false
+        this.fetchData()
+        this.$message({ message: '已保存 ' + response.data.count + ' 台第三方机器', type: 'success' })
+      }, () => { this.thirdPartyLoading = false })
+    },
     handleEdit() {
       this.editJob = { vendor: '', akskswitch: false, pveCredentialSwitch: false, ak: '', sk: '', api_base_url: '', token_id: '', token_secret: '', tls_verify: true, region: '', account: '', restype: ['group'], proj_interval: 60, ecs_interval: 10, rds_interval: 20, redis_interval: 20, isextip: false }
       getCloud().then(response => {
@@ -635,6 +690,7 @@ export default {
       this.editJob.account = ''
       this.editJob.pveCredentialSwitch = false
       this.editJob.token_secret = ''
+      if (this.editJob.vendor === 'third_party') this.loadThirdPartyHosts()
     },
     handleEditAccountChange() {
       this.editJob.akskswitch = false
