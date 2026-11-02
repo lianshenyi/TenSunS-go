@@ -396,6 +396,38 @@ func TestResourceAndEditReadContracts(t *testing.T) {
 	}
 }
 
+func TestThirdPartyCommitAndCrossAccountRead(t *testing.T) {
+	f := newFixture(t)
+	token := f.login(t)
+	hosts := []map[string]any{
+		{"name": "default-v4", "spec": "2C4G", "ip": "10.0.0.2", "port": 9100, "project": "core"},
+		{"name": "partner-v6", "spec": "4C8G", "ip": "2001:db8::2", "port": 2222, "account": "partner", "project": "edge"},
+	}
+	_, saved := f.request(t, http.MethodPost, "/api/edit/commit", token, map[string]any{"vendor": "third_party", "hosts": hosts})
+	if saved["code"] != float64(20000) || saved["data"].(map[string]any)["count"] != float64(2) {
+		t.Fatalf("save response = %v", saved)
+	}
+	_, read := f.request(t, http.MethodGet, "/api/edit/cloud?vendor=third_party", token, nil)
+	readHosts := read["data"].(map[string]any)["hosts"].([]any)
+	if len(readHosts) != 2 || readHosts[0].(map[string]any)["account"] != "default" || readHosts[1].(map[string]any)["account"] != "partner" {
+		t.Fatalf("cross-account hosts = %v", read)
+	}
+	_, replaced := f.request(t, http.MethodPost, "/api/edit/commit", token, map[string]any{"vendor": "third_party", "hosts": readHosts[1:]})
+	if replaced["code"] != float64(20000) {
+		t.Fatalf("replace response = %v", replaced)
+	}
+	services, err := f.store.Services(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := services[thirdPartyServiceID("default-v4")]; found {
+		t.Fatal("full replacement did not remove stale host")
+	}
+	if _, found := f.mock.GetKV("ConsulManager/jobs/third_party/default/ecs/global"); found {
+		t.Fatal("third-party commit created a job")
+	}
+}
+
 func TestJMSContracts(t *testing.T) {
 	f := newFixture(t)
 	token := f.login(t)

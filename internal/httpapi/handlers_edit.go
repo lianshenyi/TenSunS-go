@@ -90,8 +90,8 @@ type thirdPartyHost struct {
 // the migration placeholder.
 func (s *Server) editCommit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		EditJob editJob `json:"editJob"`
-		Vendor  string  `json:"vendor"`
+		EditJob editJob          `json:"editJob"`
+		Vendor  string           `json:"vendor"`
 		Hosts   []thirdPartyHost `json:"hosts"`
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
@@ -165,13 +165,17 @@ func validateThirdPartyHosts(hosts []thirdPartyHost) ([]thirdPartyHost, error) {
 
 func (s *Server) replaceThirdPartyServices(r *http.Request, hosts []thirdPartyHost) error {
 	existing, err := s.store.Services(r.Context(), "")
-	if err != nil { return fmt.Errorf("list existing services: %w", err) }
+	if err != nil {
+		return fmt.Errorf("list existing services: %w", err)
+	}
 	current := make(map[string]struct{}, len(hosts))
 	for _, host := range hosts {
 		id := thirdPartyServiceID(host.Name)
 		current[id] = struct{}{}
 		group := host.Project
-		if group == "" { group = "手工录入" }
+		if group == "" {
+			group = "手工录入"
+		}
 		meta := map[string]string{"iid": id, "name": host.Name, "region": thirdPartyRegion, "group": group,
 			"instance": net.JoinHostPort(host.IP, strconv.Itoa(host.Port)), "account": host.Account,
 			"vendor": "第三方", "project": host.Project, "os": "linux", "cpu": host.Spec, "mem": "无", "exp": "无", "stat": "on"}
@@ -182,9 +186,15 @@ func (s *Server) replaceThirdPartyServices(r *http.Request, hosts []thirdPartyHo
 		}
 	}
 	for id, service := range existing {
-		if !isThirdPartyService(service) { continue }
-		if _, found := current[id]; found { continue }
-		if err := s.store.Deregister(r.Context(), id); err != nil { return fmt.Errorf("deregister stale service %q: %w", id, err) }
+		if !isThirdPartyService(service) {
+			continue
+		}
+		if _, found := current[id]; found {
+			continue
+		}
+		if err := s.store.Deregister(r.Context(), id); err != nil {
+			return fmt.Errorf("deregister stale service %q: %w", id, err)
+		}
 	}
 	return nil
 }
