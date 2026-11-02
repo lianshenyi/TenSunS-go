@@ -238,6 +238,81 @@ func TestResourceAndEditReadContracts(t *testing.T) {
 	}
 }
 
+func TestThirdPartyCommitValidation(t *testing.T) {
+	validHost := func() map[string]any {
+		return map[string]any{"name": "edge-1", "spec": "2C4G", "ip": "2001:db8::1", "port": 9100}
+	}
+	tests := []struct {
+		name  string
+		hosts []map[string]any
+		want  string
+	}{
+		{name: "missing name", hosts: []map[string]any{{"spec": "2C4G", "ip": "10.0.0.1", "port": 9100}}, want: "名称、规格、IP和端口不能为空"},
+		{name: "invalid IP", hosts: []map[string]any{{"name": "edge-1", "spec": "2C4G", "ip": "bad", "port": 9100}}, want: "IP格式错误"},
+		{name: "invalid port", hosts: []map[string]any{{"name": "edge-1", "spec": "2C4G", "ip": "10.0.0.1", "port": 65536}}, want: "端口必须在1-65535之间"},
+		{name: "duplicate name", hosts: []map[string]any{validHost(), validHost()}, want: "机器名称重复"},
+		{name: "duplicate endpoint", hosts: []map[string]any{validHost(), {"name": "edge-2", "spec": "4C8G", "ip": "2001:0db8:0:0:0:0:0:1", "port": 9100}}, want: "机器IP和端口重复"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t)
+			_, body := f.request(t, http.MethodPost, "/api/edit/commit", f.login(t), map[string]any{"vendor": "third_party", "hosts": test.hosts})
+			if body["code"] != float64(40000) || !strings.Contains(body["data"].(string), test.want) {
+				t.Fatalf("response = %v", body)
+			}
+		})
+	}
+}
+
+func TestThirdPartyCommitRequiresAuthentication(t *testing.T) {
+	f := newFixture(t)
+	status, body := f.request(t, http.MethodPost, "/api/edit/commit", "", map[string]any{"vendor": "third_party", "hosts": []any{}})
+	if status != http.StatusOK || body["code"] != float64(50000) {
+		t.Fatalf("unauthenticated response = %d %v", status, body)
+	}
+}
+
+func TestThirdPartyCommitReplacesCompleteCollection(t *testing.T) {
+	f := newFixture(t)
+	token := f.login(t)
+	hosts := []map[string]any{
+		{"name": "edge-v6", "spec": "2C4G", "ip": "2001:db8::1", "port": 9100, "project": "合作方"},
+		{"name": "edge-v4", "spec": "4C8G", "ip": "10.0.0.2", "port": 2222, "account": "partner"},
+	}
+	_, saved := f.request(t, http.MethodPost, "/api/edit/commit", token, map[string]any{"vendor": "third_party", "hosts": hosts})
+	if saved["code"] != float64(20000) || saved["data"].(map[string]any)["count"] != float64(2) {
+		t.Fatalf("save response = %v", saved)
+	}
+	services, err := f.store.Services(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v6ID := thirdPartyServiceID("edge-v6")
+	v6 := services[v6ID]
+	if v6.Name != "third_party_default_ecs" || v6.Meta["region"] != "global" || v6.Meta["instance"] != "[2001:db8::1]:9100" {
+		t.Fatalf("IPv6 service = %#v", v6)
+	}
+	if _, found := f.mock.GetKV("ConsulManager/jobs/third_party/default/ecs/global"); found {
+		t.Fatal("third-party commit must not create a job")
+	}
+	_, replaced := f.request(t, http.MethodPost, "/api/edit/commit", token, map[string]any{"vendor": "third_party", "hosts": hosts[:1]})
+	if replaced["code"] != float64(20000) {
+		t.Fatalf("replace response = %v", replaced)
+	}
+	services, err = f.store.Services(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := services[thirdPartyServiceID("edge-v4")]; found {
+		t.Fatal("stale third-party service was not removed")
+	}
+	_, resources := f.request(t, http.MethodGet, "/api/nodes/res?job_id=third_party%2Fdefault%2Fecs%2Fglobal", token, nil)
+	rows := resources["res_list"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["name"] != "edge-v6" {
+		t.Fatalf("third-party resources = %v", rows)
+	}
+}
+
 func TestJMSContracts(t *testing.T) {
 	f := newFixture(t)
 	token := f.login(t)
