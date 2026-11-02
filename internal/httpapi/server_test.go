@@ -313,6 +313,58 @@ func TestThirdPartyCommitReplacesCompleteCollection(t *testing.T) {
 	}
 }
 
+func TestThirdPartyCloudReadReturnsCompleteCrossAccountBaseline(t *testing.T) {
+	f := newFixture(t)
+	token := f.login(t)
+	initial := []map[string]any{
+		{"name": "default-v4", "spec": "2C4G", "ip": "10.0.0.2", "port": 9100, "project": "core"},
+		{"name": "partner-v6", "spec": "4C8G", "ip": "2001:db8::2", "port": 2222, "account": "partner", "project": "edge"},
+	}
+	_, saved := f.request(t, http.MethodPost, "/api/edit/commit", token, map[string]any{"vendor": "third_party", "hosts": initial})
+	if saved["code"] != float64(20000) {
+		t.Fatalf("initial save = %v", saved)
+	}
+	services, err := f.store.Services(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultService := services[thirdPartyServiceID("default-v4")]
+	if defaultService.Meta["account"] != "default" || defaultService.Meta["region"] != "global" {
+		t.Fatalf("default/global service mapping = %#v", defaultService)
+	}
+
+	_, read := f.request(t, http.MethodGet, "/api/edit/cloud?vendor=third_party", token, nil)
+	data := read["data"].(map[string]any)
+	hosts := data["hosts"].([]any)
+	if read["code"] != float64(20000) || len(hosts) != 2 {
+		t.Fatalf("third-party cloud read = %v", read)
+	}
+	first := hosts[0].(map[string]any)
+	second := hosts[1].(map[string]any)
+	if first["name"] != "default-v4" || first["account"] != "default" || first["project"] != "core" || first["ip"] != "10.0.0.2" || first["port"] != float64(9100) {
+		t.Fatalf("default IPv4 host = %v", first)
+	}
+	if second["name"] != "partner-v6" || second["account"] != "partner" || second["project"] != "edge" || second["ip"] != "2001:db8::2" || second["port"] != float64(2222) {
+		t.Fatalf("partner IPv6 host = %v", second)
+	}
+
+	// Re-submit exactly the loaded cross-account baseline. This protects the
+	// full-replacement contract from silently deleting the partner account.
+	_, replaced := f.request(t, http.MethodPost, "/api/edit/commit", token, map[string]any{"vendor": "third_party", "hosts": hosts})
+	if replaced["code"] != float64(20000) {
+		t.Fatalf("re-save read baseline = %v", replaced)
+	}
+	services, err = f.store.Services(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"default-v4", "partner-v6"} {
+		if _, found := services[thirdPartyServiceID(name)]; !found {
+			t.Fatalf("read-then-save deleted third-party host %q", name)
+		}
+	}
+}
+
 func TestJMSContracts(t *testing.T) {
 	f := newFixture(t)
 	token := f.login(t)

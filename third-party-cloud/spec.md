@@ -8,7 +8,7 @@
 ## 1. 概述
 
 - vendor 内部键固定为 `third_party`，展示名为“第三方”。
-- 复用现有 `/api/edit/cloud`、Bearer 鉴权、响应 envelope、Consul KV 与 ECS Service 注册模型；不增加独立 CRUD 或 KV 前缀。
+- 复用现有 `/api/edit/cloud`、Bearer 鉴权、响应 envelope、Consul KV 与 ECS Service 注册模型；`vendor=third_party` 时该读取端点返回跨账户完整 `data.hosts` 集合，不增加独立 CRUD 或 KV 前缀。
 - 提交是完整集合的全量覆盖：新集合写入后，之前存在但本次缺失的机器被移除。
 - 机器名称、规格、IP、端口必填；账号、项目归属可选。
 
@@ -96,7 +96,7 @@
 
 | 方法 | 路径 | 状态 | 契约 |
 |---|---|---|---|
-| GET | `/api/edit/cloud` | 已存在 | 已鉴权；返回 `{"code":20000,"cloud_dict":...}`，仅由 jobs 推导账户。 |
+| GET | `/api/edit/cloud?vendor=third_party` | 本期读取扩展 | 已鉴权；返回 `{"code":20000,"data":{"hosts":[...]}}`。从所有第三方 ECS Service 重建完整集合，含规范化 `account`（缺省 `default`）及可选 `project`，不得按账户 / 项目过滤。未带该 vendor 参数时保持原有 `cloud_dict` 语义。 |
 | POST | `/api/edit/commit` | 本期写入口 | 请求 `{"vendor":"third_party","hosts":[...]}`；`hosts` 是跨账户完整集合，成功返回 `{"code":20000,"data":{"count":N}}`。 |
 | POST | `/api/third-party/*` | 禁止 | 已被产品决策明确排除。 |
 
@@ -113,7 +113,7 @@
 ## 10. 关键权衡
 
 1. 选择既有编辑模型而非独立 CRUD：最小化接口和运维模型变化，但现有写入模型以云同步任务为中心，必须先补足兼容契约。
-2. 选择全量覆盖而非单条删除：请求可完整表达目标状态，但必须在保存前可靠识别同一第三方归属的旧 Service。
+2. 选择全量覆盖而非单条删除：请求可完整表达目标状态，因此编辑前读取必须返回所有账户 / 项目归属的完整基线，避免只读子集造成跨账户误删。
 
 ## 11. 风险与待验证
 
