@@ -1,5 +1,7 @@
 # 技术规格：多云资源组与资源任务同步
 
+**关联事项**：VIDE-39；**规格状态**：实现完成，待统一验收（2026-11-03）
+
 ## 架构
 
 `httpapi` 将创建请求映射为 `accounts.Request` 并委托可注入的 `accounts.Creator`。Creator 加密并持久化 AK/SK，调用 `sync.Cloud.Group`；后者通过 `cloud.Registry` 取 Provider。生产入口注册四家 Provider。所有 Provider 只在内存中解密既有 KV 的 AK/SK；任何返回错误须是固定、脱敏的厂商/操作文本。
@@ -37,3 +39,25 @@
 - `internal/accounts`：成功时任务及调度 Upsert；失败时没有任务。
 - `internal/jobs`：四类任务的路由与单次失败不影响后续调度。
 - `internal/httpapi`：携带认证的 create 请求贯通 fake provider、加密凭据、KV 和任务调度。
+
+## VIDE-39 交付与验证规格
+
+### 自动化与 Linux 门禁
+
+- AWS、腾讯云、华为云 fixture 必须调用实际 Provider，覆盖 Group/ECS/RDS/Redis 正常响应、分页和 endpoint 错误。
+- Provider→内存 Consul 链路必须断言 ECS/RDS/Redis Service 的名称、地址、端口、映射后的 `Meta.group`，并断言 endpoint 错误写入 `status=50000`。
+- `SecretResolver` 必须覆盖加密 AK/SK 成功解密、缺失和非法密文失败，且输出不得包含凭据。
+- Go 1.22 Linux 门禁固定为 `go mod tidy -go=1.22` 无差异、`go test ./...`、`go vet ./...`、`go build ./cmd/tensuns` 全部退出 0。
+
+### 集成环境发布门禁
+
+- 发布基线为远端 `main` 的 `689b05c536b266b15f02d710b0ef1b38385f141c`；API 启动日志应能定位同一提交，Web 产物应包含第三方创建跳转文案。
+- `tensuns-go-consul` 与 `tensuns-go-api` 必须 healthy，`tensuns-go-web` 必须运行且首页返回 200；直连 API 与 Nginx 代理均运行完整 smoke。
+- BUG-039-001 的浏览器路径只允许读取 `GET /api/edit/cloud?vendor=third_party` 并进入完整主机集合编辑器，不得发送 `POST /api/jobs` 或保存正式数据。
+- 兼容旧页面的 `POST /api/jobs`（`dialogStatus=create`、`vendor=third_party`）必须返回 `code=40000` 明确提示，且不得新增 `ConsulManager/jobs/third_party/`。
+- 发布前后比较 Consul KV 键集合和服务标签集合；允许调度器正常更新既有 record 的时间戳，但禁止新增、删除或改写本次范围外的正式数据。
+- 回滚点必须包含发布前源码、配置、镜像、容器 inspect、Consul 快照和可执行回滚脚本；任一门禁失败立即恢复发布前版本。
+
+### 验证边界
+
+`10.0.10.236` 是集成测试与人工验收环境，不是生产环境。本阶段不使用三家非生产真实云账户；生产启用前仍需在隔离账户验证真实签名、IAM 权限、区域 endpoint、分页、限流/超时和回滚兼容性。
