@@ -845,4 +845,20 @@ export default {
   line-height: 1.5;
   margin-top: 6px;
 }
+
+@media screen and (max-width: 767px) {
+  .cloud-resource-dialog {
+    width: calc(100% - 24px) !important;
+    margin-top: 5vh !important;
+  }
+
+  .cloud-resource-dialog .cloud-resource-form {
+    width: 100% !important;
+    margin-left: 0 !important;
+  }
+
+  .cloud-resource-dialog .third-party-host-table {
+    overflow-x: auto;
+  }
+}
 </style>
