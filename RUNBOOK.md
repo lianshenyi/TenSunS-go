@@ -87,10 +87,10 @@ The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `a
   EPS, and BSS for project/expiry discovery); credentials are never written to
   application logs.
 - If `npm install` fails on an old runtime, use Node 14+ for this Vue CLI 4 project.
-# 第三方手工主机：当前状态
+# 第三方手工主机：当前状态（Phase 0 未完成 / 阻塞）
 
-“第三方”需求的产品决策已确认：复用既有 `/api/edit/cloud`、认证、响应 envelope 与 Consul ECS Service 模型；机器集合采用全量覆盖，禁止独立 `/api/third-party/*` API、独立 KV 或调度任务。
+“第三方”需求的产品决策已确认：复用既有 `/api/edit/cloud`、认证、响应 envelope 与 Consul ECS Service 注册模型；机器集合采用全量覆盖，禁止独立 `/api/third-party/*` API、独立 KV 或调度任务。名称、规格、IP、端口必填；账号/项目可选；名称与 `IP:端口` 全局唯一。
 
 当前仓库**尚未实现**对应写入：`/api/edit/cloud` 仅支持读取，`POST /api/edit/commit` 返回未实现错误；遗留 Flask 的同名写入会创建云同步任务，不能直接用于无 API 的第三方。不要向 `/api/edit/commit`、`/api/jobs` 或 `/api/nodes/cstecs` 发送第三方机器数据，也不要写入 `ConsulManager/jobs/third_party/*`。
 
-产品规则（`third_party`、全量覆盖、必填字段和可选归属）已确认；阻塞的是既有 Go 写入能力而非产品决策。继续实现前，必须在既有模型中落实第三方完整机器集合所用的请求/成功响应字段，以及可选 account/project 缺省时的 Service 归属与 `job_id`/region 映射。详见 `third-party-cloud/spec.md` 第 8、11 节；因此目前没有可执行的第三方 curl 联调样例。
+`0.1`、`0.2` 的产品规则已确认，但 **Phase 0 没有完成**：阻塞的是既有 Go 写入能力而非产品决策。继续实现前，必须在既有模型中落实第三方完整机器集合所用的请求/成功响应字段，以及可选 account/project 缺省时的 Service 归属与 `job_id`/region 映射。详见 `third-party-cloud/spec.md` 第 8、11 节；因此目前没有可执行的第三方 curl 联调样例，且在契约一致性通过前不得开发后端或前端。

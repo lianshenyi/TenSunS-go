@@ -6,7 +6,7 @@
 
 TenSunS-go 当前的云厂商通过账号、任务和同步适配器把 ECS 注册到 Consul。第三方厂商没有可调用 API，运维人员需要在现有云资源编辑入口中手工维护机器的名称、规格、IP 和端口。
 
-已确认的产品决策是复用既有 `/api/edit/cloud`、鉴权、响应 envelope 与 Consul KV / Service 模型；提交完整集合并全量覆盖，缺失项视为删除。不得增加独立第三方 CRUD API 或独立 KV 结构。
+已确认的产品决策是复用既有 `/api/edit/cloud`、鉴权、响应 envelope 与 Consul KV / Service 注册模型；提交完整集合并全量覆盖，缺失项视为删除。不得增加独立第三方 CRUD API 或独立 KV 结构。该决策只锁定目标边界，**不表示 Phase 0 已完成，也不授权实现**：既有写入端点、集合容器和可选归属的映射仍待在同一模型内确认。
 
 ### 1.2 目标
 
@@ -31,7 +31,7 @@ TenSunS-go 当前的云厂商通过账号、任务和同步适配器把 ECS 注�
 ### F1. 既有云资源入口中的第三方厂商
 
 - 现有云厂商选择中可选择“第三方”（`third_party`）。
-- `/api/edit/cloud` 的既有返回模型可暴露已有第三方归属；认证与 `code` envelope 不变。
+- `/api/edit/cloud` 的既有读取、认证与 `code` envelope 必须保持兼容；第三方保存只能扩展已确认的既有编辑模型，不能另起路由。
 
 ### F2. 全量保存手工机器集合
 
@@ -42,7 +42,7 @@ TenSunS-go 当前的云厂商通过账号、任务和同步适配器把 ECS 注�
 ### F3. 既有资源读取兼容
 
 - 保存后的 Service 使用既有 ECS Service / Meta 形状，使现有资源读取链路可读取。
-- 不写入独立第三方 KV；持久化必须采用当前既有 Consul 模型中已确认可用于手工资产的路径。
+- 不写入独立第三方 KV；持久化必须采用既有 Consul 模型。具体既有写入入口和归属映射尚未确认，不能自行指定路径或默认值。
 
 ## 4. 非功能需求
 
@@ -72,6 +72,6 @@ TenSunS-go 当前的云厂商通过账号、任务和同步适配器把 ECS 注�
 
 | 风险 | 缓解 |
 |---|---|
-| 当前 Go 的 `/api/edit/cloud` 只有读语义，`/api/edit/commit` 为占位错误 | 在确定可复用的写端点、请求字段及不触发调度器的既有 KV 映射前，禁止实现。证据见 spec §11。 |
+| 当前 Go 的 `/api/edit/cloud` 只有读语义，`/api/edit/commit` 为占位错误 | Phase 0 尚未完成。在同一既有模型中确定写端点、请求字段及不触发调度器的 Service/KV 映射前，禁止实现。证据见 spec §11。 |
 | 当前 Python `edit/commit` 会创建 ECS 调度任务 | 不将其行为直接套用于 `third_party`；需产品确认兼容扩展的确切落点。 |
 | IPv6 拼接 `IP:端口` 歧义 | 以 `net.JoinHostPort` 定义 Service address/check/meta 的格式。 |

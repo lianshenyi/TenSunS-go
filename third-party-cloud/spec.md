@@ -1,14 +1,14 @@
 # spec — 第三方云厂商手工机器录入技术设计
 
 **产品形态**：TenSunS-go 既有云资源编辑模型中的 `third_party` 厂商扩展。
-**状态**：设计稿 v1.2（2026-11-03）；产品决策已确认。经代码核验，现有写入能力尚不能承载该契约；在不新建模型的约束下暂不可实现。
+**状态**：设计稿 v1.3（2026-11-03）；Phase 0 **未完成且阻塞**。产品已确认复用边界和字段规则，但经代码核验，现有写入能力尚不能承载该契约；在不新建模型的约束下暂不可实现。
 
 ---
 
 ## 1. 概述
 
 - vendor 内部键固定为 `third_party`，展示名为“第三方”。
-- 复用现有 `/api/edit/cloud`、Bearer 鉴权、响应 envelope、Consul KV 与 ECS Service 模型；不增加独立 CRUD 或 KV 前缀。
+- 复用现有 `/api/edit/cloud`、Bearer 鉴权、响应 envelope、Consul KV 与 ECS Service 注册模型；不增加独立 CRUD 或 KV 前缀。
 - 提交是完整集合的全量覆盖：新集合写入后，之前存在但本次缺失的机器被移除。
 - 机器名称、规格、IP、端口必填；账号、项目归属可选。
 
@@ -30,7 +30,7 @@
 
 浏览器沿用现有 Vue 2 编辑页和 Bearer Token，读取仍经 `GET /api/edit/cloud`。完整集合必须经既有编辑写入契约保存；后端以当前 ECS Service 注册模型写入，并将缺失的旧 Service 注销。现有 `/api/nodes/res` 通过 Service 名称和 Tags 读取这些资源。
 
-**阻塞点**：当前代码没有满足该模型的写入契约；详见 §11。因此本节描述的是已确认目标架构，不是可调用的新接口。产品决策已解除，剩余的是既有实现与目标契约的事实差异，不能由实现方自行补全。
+**阻塞点**：当前代码没有满足该模型的写入契约；详见 §11。因此本节描述的是已确认目标架构，不是可调用的新接口。`0.1`、`0.2` 的产品规则虽已确认，`0.3` 未完成，所以整个 Phase 0 不得标记完成；剩余事实差异不能由实现方自行补全。
 
 ## 4. 系统组件 / 模块
 
@@ -44,7 +44,7 @@
 
 ### 4.3 Consul ECS Service
 
-职责：沿用 `<vendor>_<account>_ecs` Service 名称及 ECS Meta 字段，为 `/api/nodes/res` 提供资源列表数据。全量覆盖时注销本次集合缺失的同归属 Service。
+职责：沿用既有 ECS Service 名称、Tags、Meta 与健康检查字段形状，为现有资源读取链路提供数据。全量覆盖时注销本次集合缺失的同归属 Service；在账号/项目可省略的前提下，具体名称、region Tag 与归属尚待确认，不能由本文固定默认值。
 
 ## 5. 关键设计 / 核心机制
 
@@ -56,7 +56,7 @@
 
 每台机器使用现有 ECS 资源可识别的字段：`ID`、`Name`、`Address`、`Port`、`Tags`、`Meta` 和 TCP `Check`。`Meta` 至少沿用 `iid`、`name`、`region`、`group`、`instance`、`account`、`vendor`、`os`、`cpu`、`mem`、`exp`、`stat`。
 
-没有提供账号时，Service 归属、名称及用于 `resourceMetas` 的 job id 尚无法从既有契约安全推导；这是 §11 的确认项之一。
+没有提供账号或项目时，Service 归属、名称及用于 `resourceMetas` 的 job id 尚无法从既有契约安全推导；这是 §11 的确认项之一。
 
 ### 5.3 IPv6
 
@@ -79,7 +79,7 @@
 
 ### 6.2 Consul
 
-禁止独立 KV。最终具体写入键必须是项目已存在、且不会使调度器运行第三方适配器的既有模型。Service 必须复用 `internal/sync/writer.go` 所定义的 ECS Service 字段形状；最终 Service Name、Tags 中 region 和可选 account / project 的空值表达须在 §11 确认后锁定。
+禁止独立 KV。最终具体写入键必须是项目已存在、且不会使调度器运行第三方适配器的既有模型。Service 必须复用 `internal/sync/writer.go` 所定义的 ECS Service 字段形状；最终 Service Name、Tags 中 region 和可选 account / project 的空值表达须在 §11 确认后锁定。本文不把 `ConsulManager/assets/third_party/*`、独立 Service 名称或默认归属作为候选方案。
 
 ## 7. 校验与错误语义
 
@@ -99,10 +99,10 @@
 | 方法 | 路径 | 状态 | 契约 |
 |---|---|---|---|
 | GET | `/api/edit/cloud` | 已存在 | 已鉴权；返回 `{"code":20000,"cloud_dict":...}`，仅由 jobs 推导账户。 |
-| POST | `/api/edit/commit` | 占位 | 当前返回 `50000`；不能作为已发布第三方保存接口。 |
+| POST | `/api/edit/commit` | 占位候选 | 当前返回 `50000`；只有在确认其作为同一既有编辑模型的扩展入口并锁定集合容器/响应后，才能成为第三方保存入口。 |
 | POST | `/api/third-party/*` | 禁止 | 已被产品决策明确排除。 |
 
-**待确认的最小兼容写入契约**：产品需指定是在 `/api/edit/commit` 增加何种 `editJob` 分支，或提供哪个已有非独立写入口；并明确完整机器集合的 JSON 容器字段、成功 `data` 字段、可选 account/project 缺省归属和 Service 的 `job_id` / region 表示。在确认前不得实现或让前端联调写请求。
+**待确认的最小兼容写入契约**：产品需指定在同一既有编辑模型内使用的写入口（若为 `/api/edit/commit`，须明确其扩展分支），并明确完整机器集合的 JSON 容器字段、成功 `data` 字段、可选 account/project 缺省归属和 Service 的 `job_id` / region 表示。在确认前不得实现或让前端联调写请求。
 
 ## 9. 技术选型
 
@@ -119,10 +119,10 @@
 
 ## 11. 风险与待验证
 
-- [x] 产品已确认：复用现有模型、`third_party`、全量覆盖、字段必填与可选归属规则。
+- [x] `0.1` / `0.2` 产品规则已确认：复用现有模型、`third_party`、全量覆盖、字段必填与可选归属规则；这不是整个 Phase 0 完成状态。
 - [x] 事实核验：`internal/httpapi/handlers_edit.go:10-29` 中 `/api/edit/cloud` 只处理 GET，`/api/edit/commit` 返回未实现 `50000`。
 - [x] 事实核验：`flask-consul/views/edit_cloud.py:50-154` 的遗留 `edit/commit` 会创建 / 删除 `ConsulManager/jobs/<vendor>/<account>/{ecs,rds,redis}/...`，不适合无 API 的第三方。
 - [x] 事实核验：`internal/httpapi/handlers_resources.go:65-92` 的既有资源读取需要四段 `job_id`，并以 `<vendor>_<account>_ecs` 加 region Tag 查询 Service。
 - [ ] 实现授权 / 契约补充：在既有 `POST /api/edit/commit` 中明确第三方完整集合的 JSON 容器和成功响应字段；当前 Go handler 固定返回未实现，Python 同名实现只接受云同步任务 `editJob`。
 - [ ] 实现授权 / 契约补充：明确 account/project 省略时的稳定归属值，以及 Service Name、region Tag、`job_id` 的映射；不能以默认值替代，因为这会改变已确认的可选语义。
-- [ ] 上述差异消除后，才可落实后端、前端和测试实现。
+- [ ] **Phase 0 完成条件**：上述两项写入契约差异消除后，才可解除阻塞并落实后端、前端和测试实现。
