@@ -163,3 +163,32 @@ one Hamburger assertion, one SvgIcon assertion, and four Breadcrumb async
 update/router assertions. The implementation added the third-party host suite
 and its two tests passed; it did not add failures. Treat those six failures as
 an existing test-suite risk, not third-party-feature coverage.
+
+### BUG-003 mobile viewport verification
+
+At `375×812`, the edit dialog must be `351px` wide (`100% - 24px`) rather
+than its desktop `45%` width. The third-party table preserves its `860px`
+minimum content width and exposes horizontal scrolling, so each input remains
+usable instead of wrapping into vertical characters. The media query applies
+only below `768px`; at `1280×812`, the dialog remains the existing `576px`
+(`45%`) wide layout.
+
+The isolated verification used the in-memory Consul mock on `127.0.0.1:18582`,
+the Go API on `127.0.0.1:12028`, and the Vue dev server on `127.0.0.1:19528`.
+Log in as the disposable local `admin` user, choose **编辑云资源** and
+**第三方**, then:
+
+1. Confirm the complete host collection loads and the visible table has a
+   horizontal scroll area.
+2. Add `mobile-v4` / `2C4G` / `192.0.2.10` / `9100`, then save. The success
+   message is `已保存 1 台第三方机器`.
+3. Reopen the dialog, select **第三方**, delete that row, and save. The success
+   message is `已保存 0 台第三方机器`.
+
+Recorded browser evidence is
+`artifacts/screenshots/bug-003-mobile-fixed-selected.png`,
+`artifacts/screenshots/bug-003-mobile-fixed-saved.png`,
+`artifacts/screenshots/bug-003-mobile-fixed-delete.png`, and
+`artifacts/screenshots/bug-003-desktop-regression.png`. The browser DOM check
+reported `dialogWidth=351`, `bodyScrollWidth=860`, `bodyClientWidth=293` on
+mobile and `dialogWidth=576` at desktop width.

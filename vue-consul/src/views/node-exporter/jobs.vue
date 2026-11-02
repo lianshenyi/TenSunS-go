@@ -247,13 +247,14 @@
       </div>
     </el-dialog>
 
-    <el-dialog title="编辑云资源" :visible.sync="editFormVisible" width="45%">
+    <el-dialog title="编辑云资源" :visible.sync="editFormVisible" width="45%" custom-class="cloud-resource-dialog">
       <el-form
         ref="dataForm"
         :rules="rules"
         :model="editJob"
         label-position="right"
         label-width="auto"
+        class="cloud-resource-form"
         style="width: 90%; margin-left: 1px;"
       >
         <el-form-item label="云厂商" prop="vendor">
@@ -270,7 +271,7 @@
             show-icon
             class="third-party-notice"
           />
-          <el-table v-loading="thirdPartyLoading" :data="thirdPartyHosts" border style="width: 100%">
+          <el-table v-loading="thirdPartyLoading" :data="thirdPartyHosts" border style="width: 100%" class="third-party-host-table">
             <el-table-column label="名称" min-width="140">
               <template slot-scope="{row}">
                 <el-input v-model="row.name" aria-label="机器名称" />
@@ -798,6 +799,22 @@ export default {
 
 .add-third-party-host {
   margin-top: 12px;
+}
+
+@media screen and (max-width: 767px) {
+  .cloud-resource-dialog {
+    width: calc(100% - 24px) !important;
+    margin-top: 5vh !important;
+  }
+
+  .cloud-resource-dialog .cloud-resource-form {
+    width: 100% !important;
+    margin-left: 0 !important;
+  }
+
+  .cloud-resource-dialog .third-party-host-table {
+    overflow-x: auto;
+  }
 }
 
 .el-table .success-row {
