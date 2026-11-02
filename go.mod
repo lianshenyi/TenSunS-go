@@ -4,6 +4,7 @@ go 1.22
 
 require (
 	github.com/alibabacloud-go/darabonba-openapi v0.1.18
+	github.com/alibabacloud-go/darabonba-openapi/v2 v2.0.10
 	github.com/alibabacloud-go/ecs-20140526/v4 v4.26.10
 	github.com/alibabacloud-go/r-kvstore-20150101/v5 v5.3.0
 	github.com/alibabacloud-go/rds-20140815/v5 v5.0.5
@@ -25,7 +26,6 @@ require (
 
 require (
 	github.com/alibabacloud-go/alibabacloud-gateway-spi v0.0.5 // indirect
-	github.com/alibabacloud-go/darabonba-openapi/v2 v2.0.10 // indirect
 	github.com/alibabacloud-go/debug v1.0.1 // indirect
 	github.com/alibabacloud-go/endpoint-util v1.1.0 // indirect
 	github.com/alibabacloud-go/openapi-util v0.1.1 // indirect
