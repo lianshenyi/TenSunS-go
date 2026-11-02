@@ -148,7 +148,7 @@
     <el-dialog title="新增云资源" :visible.sync="newFormVisible" width="45%">
       <el-form
         ref="dataForm"
-        :rules="rules"
+        :rules="createRules"
         :model="ecsJob"
         label-position="right"
         label-width="auto"
@@ -202,6 +202,9 @@
         </el-form-item>
         <el-form-item v-if="ecsJob.vendor === 'pve'" label="PVE 集群" prop="region">
           <el-input v-model="ecsJob.region[0]" placeholder="请输入 PVE 集群标识" />
+        </el-form-item>
+        <el-form-item v-else-if="isThirdPartyCloudAccount" label="区域" prop="region">
+          <el-input v-model.trim="ecsJob.region[0]" placeholder="请输入区域标识" />
         </el-form-item>
         <el-form-item v-else label="区域" prop="region">
           <el-select v-model="ecsJob.region" filterable multiple collapse-tags placeholder="请选择">
@@ -447,6 +450,38 @@ export default {
         callback()
       }
     }
+    const validateCreateCredential = (rule, value, callback) => {
+      const credential = String(value || '')
+      if (this.ecsJob.vendor === 'third_party' && credential === '') {
+        callback()
+        return
+      }
+      if (credential === '') {
+        callback(new Error('此为必填项'))
+        return
+      }
+      validateInput(rule, credential, callback)
+    }
+    const rules = {
+      vendor: [{ required: true, message: '此为必填项', trigger: 'change' },
+        { validator: validateInput, trigger: ['blur', 'change'] }],
+      account: [{ required: true, message: '此为必填项', trigger: 'change' },
+        { validator: validateInput, trigger: ['blur', 'change'] }],
+      ak: [{ required: true, message: '此为必填项', trigger: 'change' },
+        { validator: validateInput, trigger: ['blur', 'change'] }],
+      sk: [{ required: true, message: '此为必填项', trigger: 'change' },
+        { validator: validateInput, trigger: ['blur', 'change'] }],
+      api_base_url: [{ required: true, message: '此为必填项', trigger: 'blur' },
+        { type: 'url', message: '请输入有效的 HTTPS API 地址', trigger: 'blur' },
+        { validator: validateHTTPSURL, trigger: 'blur' }],
+      token_id: [{ required: true, message: '此为必填项', trigger: 'change' }],
+      token_secret: [{ required: true, message: '此为必填项', trigger: 'change' }],
+      region: [{ required: true, message: '此为必填项', trigger: 'blur' }],
+      proj_interval: [{ required: true, message: '此为必填项', trigger: 'change' },
+        { validator: validateInput, trigger: ['blur', 'change'] }],
+      ecs_interval: [{ required: true, message: '此为必填项', trigger: 'change' },
+        { validator: validateInput, trigger: ['blur', 'change'] }]
+    }
     return {
       dialogStatus: '',
       listLoading: false,
@@ -459,25 +494,11 @@ export default {
       itype: [],
       restype: ['group', 'ecs'],
       query: { vendor: '', account: '', itype: '' },
-      rules: {
-        vendor: [{ required: true, message: '此为必填项', trigger: 'change' },
-          { validator: validateInput, trigger: ['blur', 'change'] }],
-        account: [{ required: true, message: '此为必填项', trigger: 'change' },
-          { validator: validateInput, trigger: ['blur', 'change'] }],
-        ak: [{ required: true, message: '此为必填项', trigger: 'change' },
-          { validator: validateInput, trigger: ['blur', 'change'] }],
-        sk: [{ required: true, message: '此为必填项', trigger: 'change' },
-          { validator: validateInput, trigger: ['blur', 'change'] }],
-        api_base_url: [{ required: true, message: '此为必填项', trigger: 'blur' },
-          { type: 'url', message: '请输入有效的 HTTPS API 地址', trigger: 'blur' },
-          { validator: validateHTTPSURL, trigger: 'blur' }],
-        token_id: [{ required: true, message: '此为必填项', trigger: 'change' }],
-        token_secret: [{ required: true, message: '此为必填项', trigger: 'change' }],
-        region: [{ required: true, message: '此为必填项', trigger: 'blur' }],
-        proj_interval: [{ required: true, message: '此为必填项', trigger: 'change' },
-          { validator: validateInput, trigger: ['blur', 'change'] }],
-        ecs_interval: [{ required: true, message: '此为必填项', trigger: 'change' },
-          { validator: validateInput, trigger: ['blur', 'change'] }]
+      rules,
+      createRules: {
+        ...rules,
+        ak: [{ validator: validateCreateCredential, trigger: ['blur', 'change'] }],
+        sk: [{ validator: validateCreateCredential, trigger: ['blur', 'change'] }]
       },
       vendors: [{ value: 'alicloud', label: '阿里云' },
         { value: 'tencent_cloud', label: '腾讯云' },
@@ -583,6 +604,11 @@ export default {
       upFormVisible: false,
       editFormVisible: false,
       entFormVisible: false
+    }
+  },
+  computed: {
+    isThirdPartyCloudAccount() {
+      return this.ecsJob.vendor === 'third_party'
     }
   },
   created() {
