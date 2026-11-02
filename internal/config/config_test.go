@@ -13,6 +13,9 @@ func TestVendorLookup(t *testing.T) {
 	if got := VendorDisplay("legacy"); got != "legacy" {
 		t.Fatalf("unknown vendor should pass through, got %q", got)
 	}
+	if got := VendorDisplay("third_party"); got != "第三方" {
+		t.Fatalf("third-party vendor display = %q", got)
+	}
 }
 
 func TestRegionDisplay(t *testing.T) {

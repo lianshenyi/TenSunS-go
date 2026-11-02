@@ -50,6 +50,7 @@ var Vendors = map[string]string{
 	"tencent_cloud": "腾讯云",
 	"huaweicloud":   "华为云",
 	"awscloud":      "AWS云",
+	"third_party":   "第三方",
 }
 
 // Regions contains the same region code -> display-name tables as

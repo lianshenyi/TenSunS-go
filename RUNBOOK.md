@@ -87,10 +87,20 @@ The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `a
   EPS, and BSS for project/expiry discovery); credentials are never written to
   application logs.
 - If `npm install` fails on an old runtime, use Node 14+ for this Vue CLI 4 project.
-# 第三方手工主机：当前状态（Phase 0 未完成 / 阻塞）
+# 第三方手工主机：当前状态（Phase 0 已确认，后端实现中）
 
 “第三方”需求的产品决策已确认：复用既有 `/api/edit/cloud`、认证、响应 envelope 与 Consul ECS Service 注册模型；机器集合采用全量覆盖，禁止独立 `/api/third-party/*` API、独立 KV 或调度任务。名称、规格、IP、端口必填；账号/项目可选；名称与 `IP:端口` 全局唯一。
 
-当前仓库**尚未实现**对应写入：`/api/edit/cloud` 仅支持读取，`POST /api/edit/commit` 返回未实现错误；遗留 Flask 的同名写入会创建云同步任务，不能直接用于无 API 的第三方。不要向 `/api/edit/commit`、`/api/jobs` 或 `/api/nodes/cstecs` 发送第三方机器数据，也不要写入 `ConsulManager/jobs/third_party/*`。
+第三方写入使用现有 Bearer 鉴权的 `POST /api/edit/commit`：`{"vendor":"third_party","hosts":[...]}`。`hosts` 是跨账户完整集合，成功响应为 `{"code":20000,"data":{"count":N}}`；缺失项会从既有 ECS Service 注册中注销。空账号内部映射为 `default`，region 固定 `global`，因此可通过 `/api/nodes/res?job_id=third_party/default/ecs/global` 读取。该分支绝不创建 `ConsulManager/jobs/*`、同步记录或独立 KV/CRUD。
 
-`0.1`、`0.2` 的产品规则已确认，但 **Phase 0 没有完成**：阻塞的是既有 Go 写入能力而非产品决策。继续实现前，必须在既有模型中落实第三方完整机器集合所用的请求/成功响应字段，以及可选 account/project 缺省时的 Service 归属与 `job_id`/region 映射。详见 `third-party-cloud/spec.md` 第 8、11 节；因此目前没有可执行的第三方 curl 联调样例，且在契约一致性通过前不得开发后端或前端。
+使用已登录会话返回的 Bearer token（仅在本地受控环境使用）可验证写入；`hosts` 必须是目标完整集合，空数组会删除全部第三方机器：
+
+```bash
+curl -sS -X POST http://127.0.0.1:2026/api/edit/commit \
+  -H "Authorization: Bearer <TOKEN>" -H 'Content-Type: application/json' \
+  --data '{"vendor":"third_party","hosts":[{"name":"manual-v6","spec":"2C4G","ip":"2001:db8::10","port":9100}]}'
+curl -sS -H "Authorization: Bearer <TOKEN>" \
+  'http://127.0.0.1:2026/api/nodes/res?job_id=third_party%2Fdefault%2Fecs%2Fglobal'
+```
+
+Run the focused backend evidence with `go test ./internal/httpapi -run 'TestThirdPartyCommit'`; it covers authentication, required fields, IPv4/IPv6 parsing, port bounds, duplicate name / endpoint rejection, the default account/region mapping, Service replacement, and the no-job invariant.
