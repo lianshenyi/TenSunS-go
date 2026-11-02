@@ -1,236 +1,128 @@
-# spec — 第三方手工录入主机技术设计
+# spec — 第三方云厂商手工机器录入技术设计
 
-**产品形态**：TenSunS-go 的一个受鉴权保护的手工资产 API，供现有 Vue 2 + Element UI 前端使用。
-**状态**：设计稿 v1.0（2026-11-02）；✅ 联调契约已锁定，尚未实现服务端或前端。
+**产品形态**：TenSunS-go 既有云资源编辑模型中的 `third_party` 厂商扩展。
+**状态**：设计稿 v1.1（2026-11-03）；产品决策已确认，写入接口与既有模型存在事实冲突，尚不可实现。
 
 ---
 
 ## 1. 概述
 
-- 厂商内部键固定为 `third_party`，页面展示名固定为“第三方”。
-- 第三方账户只是手工资产的命名空间，不是云账户，不存在 AK/SK、区域选择或定时同步。
-- 一个主机有后端生成的全局 `iid`，并在一个第三方账户内唯一占用一个 IP。
-- 所有资源写入 Consul；列表以资产 KV 为权威数据源，Consul Service 用于现有服务生态和健康检查。
-- 新接口在 `/api/third-party/` 下，不改变遗留 `/api/edit/*`、`/api/jobs`、`/api/nodes/*` 的契约。
+- vendor 内部键固定为 `third_party`，展示名为“第三方”。
+- 复用现有 `/api/edit/cloud`、Bearer 鉴权、响应 envelope、Consul KV 与 ECS Service 模型；不增加独立 CRUD 或 KV 前缀。
+- 提交是完整集合的全量覆盖：新集合写入后，之前存在但本次缺失的机器被移除。
+- 机器名称、规格、IP、端口必填；账号、项目归属可选。
 
 ## 2. 目标 / 非目标
 
 ### Goals
 
-- 提供账户和主机的单条 CRUD API，以及明确的校验和失败语义。
-- 用现有 `Authorization` Bearer Token、`code` 业务码、Consul `store.Store` 接口实现。
-- 写出的 Service Meta 与现有 ECS 资源字段兼容，方便未来扩展消费方。
+- 将第三方机器纳入既有云资源编辑与读取模型。
+- 使用既有 Consul ECS Service 名称、Tags、Meta 与健康检查字段。
+- 在保存前后端一致验证名称与 `IP:端口` 的全局唯一性。
 
 ### Non-Goals（明确不做）
 
-- 不使用 Gin/GORM，不引入第三方依赖；当前仓库使用标准库 `net/http` 和 Consul。
-- 不创建调度任务、任务记录或资源组 KV，不向云厂商拉取数据。
-- 不支持批量操作和 JumpServer 同步。
-- 不把第三方账户加入 `GET /api/edit/cloud`；该接口只表达有 `group` 任务的云账户。
+- 不新增 `/api/third-party/*`，不创建独立账户 / 主机 CRUD。
+- 不创建 `ConsulManager/assets/third_party/*` 或其他独立 KV 结构。
+- 不创建 `ConsulManager/jobs/third_party/*`、同步记录或 JumpServer 同步。
 
 ## 3. 架构总览
 
-浏览器携带登录返回的 Bearer Token 调用 Go API。HTTP handler 完成 JSON 解码、字段校验和业务错误映射；第三方资产服务读写 Consul KV，并注册或撤销对应 Consul Service。读取列表只读取规范 KV，以避免健康检查状态影响资产可见性。前端因此不调用任何云适配器或调度器。
+浏览器沿用现有 Vue 2 编辑页和 Bearer Token，读取仍经 `GET /api/edit/cloud`。完整集合必须经既有编辑写入契约保存；后端以当前 ECS Service 注册模型写入，并将缺失的旧 Service 注销。现有 `/api/nodes/res` 通过 Service 名称和 Tags 读取这些资源。
+
+**阻塞点**：当前代码没有满足该模型的写入契约；详见 §11。因此本节描述的是已确认目标架构，不是可调用的新接口。
 
 ## 4. 系统组件 / 模块
 
-### 4.1 Vue 第三方资产页面
+### 4.1 Vue 2 + Element UI 编辑页
 
-职责：
+职责：增加 `third_party` 选项、维护可增删的机器行，并在提交前执行 §7 校验；不引入独立页面或 API client。
 
-- 维护账户选择、新增/编辑主机表单、删除确认和后端校验错误展示。
-- 经 `vue-consul/src/utils/request-ops.js` 自动附带 Authorization，并仅调用第 7 节 API。
+### 4.2 `internal/httpapi` 编辑 handler
 
-### 4.2 `internal/httpapi` 路由与 handler
+职责：保持 `/api/edit/cloud` 的读语义和鉴权；在确认的既有写端点上解析完整机器集合、校验并交由 Consul Service 保存。
 
-职责：
+### 4.3 Consul ECS Service
 
-- 将 `/api/third-party/` 置于已有 `withAuth` 中间件之后。
-- 调用第三方资产业务逻辑；不将客户端请求直接拼接成 Consul 路径。
-
-### 4.3 第三方资产服务
-
-职责：
-
-- 生成 `iid`、规范化字段、检查账户与 IP 唯一性。
-- 读写第 6 节 KV，并构造兼容的 `store.ServiceRegistration`。
-
-### 4.4 Consul
-
-职责：
-
-- 保存账户和资产的 JSON 文档。
-- 通过 `agent/service/register` 保存可发现的主机，删除时 `agent/service/deregister/{iid}`。
+职责：沿用 `<vendor>_<account>_ecs` Service 名称及 ECS Meta 字段，为 `/api/nodes/res` 提供资源列表数据。全量覆盖时注销本次集合缺失的同归属 Service。
 
 ## 5. 关键设计 / 核心机制
 
-### 5.1 独立资产模型，不伪造云任务
+### 5.1 批量全量覆盖
 
-`third_party` 不代表云适配器。若写入 `ConsulManager/jobs/third_party/...`，启动加载的调度器会尝试执行未注册厂商；因此第三方记录不写 jobs/record/group 路径。未来若需任务列表或 JumpServer 同步，必须另立兼容设计。
+请求携带完整集合；服务器验证集合内部与既存机器的冲突后注册 / 更新集合中的 Service，再注销同一第三方归属但不在集合中的 Service。没有单条硬删除接口。
 
-### 5.2 两份 Consul 表示的写入顺序
+### 5.2 既有 ECS Service 映射
 
-主机规范文档是权威数据。创建：先检查冲突，再写资产 KV，注册 Service；更新：更新 KV 后重注册 Service；删除：先注销 Service，后删除 KV。任一步失败都返回 `50000`，必须记录 `iid`、操作和底层错误，绝不返回 `20000`。实现应对失败作尽力补偿，并由测试覆盖 Service 注册失败的返回路径。
+每台机器使用现有 ECS 资源可识别的字段：`ID`、`Name`、`Address`、`Port`、`Tags`、`Meta` 和 TCP `Check`。`Meta` 至少沿用 `iid`、`name`、`region`、`group`、`instance`、`account`、`vendor`、`os`、`cpu`、`mem`、`exp`、`stat`。
 
-### 5.3 编辑和删除语义
+没有提供账号时，Service 归属、名称及用于 `resourceMetas` 的 job id 尚无法从既有契约安全推导；这是 §11 的确认项之一。
 
-- `PATCH` 是完整替换，不是部分合并：请求必须携带创建时所有必填字段；省略可选字段会恢复默认值。
-- `iid` 仅在 URL 给出，正文的 `iid` 一律忽略/拒绝，防止跨主机覆盖。
-- 删除是硬删除：注销服务并删除资产 KV，后续 GET 返回“不存在”。
-- 删除账户仅允许没有主机；有主机时返回冲突，永不级联删除。
+### 5.3 IPv6
+
+验证使用 `net/netip.ParseAddr`。任何 Service `instance` 或 TCP 检查地址用 `net.JoinHostPort(ip, strconv.Itoa(port))` 表示，因此 IPv6 使用方括号；唯一键使用规范化地址加端口。
 
 ## 6. 数据模型
 
-### 6.1 Consul KV
+### 6.1 提交集合中每台机器
 
-| 路径 | JSON | 说明 |
-|---|---|---|
-| `ConsulManager/assets/third_party/accounts/{account}` | `{"account":"edge","created_at":"..."}` | 账户命名空间。 |
-| `ConsulManager/assets/third_party/hosts/{iid}` | 下方 `Host` | 主机权威记录。 |
+| 字段 | 必填 | 规则 |
+|---|---:|---|
+| `name` | 是 | 去首尾空白后非空；全局唯一。 |
+| `spec` | 是 | 去首尾空白后非空；用于显示的机器规格。 |
+| `ip` | 是 | IPv4 或 IPv6，使用规范化地址。 |
+| `port` | 是 | JSON 整数，范围 1–65535。 |
+| `account` | 否 | 云账号归属；缺省语义待确认。 |
+| `project` | 否 | 项目归属；缺省语义待确认。 |
 
-`account` 不得直接来自未校验的路径片段；实现仅接受正则 `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`。
+`IP:端口`（IPv6 使用 bracketed host:port）全局唯一。字段 `spec` 与现有 ECS Meta 的 `cpu` / `mem` 映射尚未由产品确认，不能擅自拆分或改名。
 
-```json
-{
-  "iid": "third-550e8400-e29b-41d4-a716-446655440000",
-  "account": "edge",
-  "name": "partner-web-01",
-  "ip": "2001:db8::10",
-  "port": 9100,
-  "cpu": "4核",
-  "mem": "8GB",
-  "os": "linux",
-  "group": "手工录入",
-  "status": "RUNNING",
-  "created_at": "2026-11-02T16:00:00Z",
-  "updated_at": "2026-11-02T16:00:00Z"
-}
-```
+### 6.2 Consul
 
-`iid` 由后端用 `crypto/rand` 生成 RFC 4122 v4 UUID 并加 `third-` 前缀；客户端不可传入或选择它。
+禁止独立 KV。最终具体写入键必须是项目已存在、且不会使调度器运行第三方适配器的既有模型。Service 必须复用 `internal/sync/writer.go` 所定义的 ECS Service 字段形状；最终 Service Name、Tags 中 region 和可选 account / project 的空值表达须在 §11 确认后锁定。
 
-### 6.2 Consul Service 映射
+## 7. 校验与错误语义
 
-每个主机注册：
+| 规则 | 行为 |
+|---|---|
+| 缺少名称、规格、IP 或端口 | 返回现有业务校验失败 envelope。 |
+| 无法解析 IPv4 / IPv6 | 返回业务校验失败 envelope。 |
+| 端口不是整数或不在 1–65535 | 返回业务校验失败 envelope。 |
+| 重复名称或重复规范化 `IP:端口` | 返回业务校验失败 envelope。 |
+| 认证缺失、无效或过期 | 保持现有 HTTP 200、`code=50000`、认证异常文案。 |
+| Consul 读写失败 | 保持现有 HTTP 200、`code=50000`、服务端日志记录原因。 |
 
-```json
-{
-  "ID": "third-...",
-  "Name": "third_party_edge_ecs",
-  "Address": "2001:db8::10",
-  "Port": 9100,
-  "Tags": ["ON", "linux", "manual"],
-  "Meta": {
-    "iid": "third-...",
-    "name": "partner-web-01",
-    "region": "手工录入",
-    "group": "手工录入",
-    "instance": "[2001:db8::10]:9100",
-    "account": "edge",
-    "vendor": "第三方",
-    "os": "linux",
-    "cpu": "4核",
-    "mem": "8GB",
-    "exp": "无",
-    "stat": "on"
-  },
-  "Check": {"TCP":"[2001:db8::10]:9100","Interval":"60s"}
-}
-```
+成功继续使用 HTTP 200、`code=20000`。校验失败的具体 `code` / 文案必须以现有写端点实现为准；当前端点尚不存在，不能编造。
 
-IPv4 `instance`/`TCP` 是 `ip:port`；IPv6 必须按 `net.JoinHostPort(ip, strconv.Itoa(port))` 加方括号。`status=STOPPED` 时 Tags 第一项为 `OFF`、`Meta.stat=off`；其他字段不变。
+## 8. 接口 / API 设计
 
-## 7. 接口 / API 设计
+| 方法 | 路径 | 状态 | 契约 |
+|---|---|---|---|
+| GET | `/api/edit/cloud` | 已存在 | 已鉴权；返回 `{"code":20000,"cloud_dict":...}`，仅由 jobs 推导账户。 |
+| POST | `/api/edit/commit` | 占位 | 当前返回 `50000`；不能作为已发布第三方保存接口。 |
+| POST | `/api/third-party/*` | 禁止 | 已被产品决策明确排除。 |
 
-### 7.1 通用契约
+**待确认的最小兼容写入契约**：产品需指定是在 `/api/edit/commit` 增加何种 `editJob` 分支，或提供哪个已有非独立写入口；并明确完整机器集合的 JSON 容器字段、成功 `data` 字段、可选 account/project 缺省归属和 Service 的 `job_id` / region 表示。在确认前不得实现或让前端联调写请求。
 
-- 除登录外所有下列端点必须有 `Authorization: Bearer <HS512 token>`。缺失、错误或过期时，HTTP 200，`{"code":50000,"data":"403：认证异常，请重新登录！"}`。
-- 请求为 `Content-Type: application/json`；上限沿用服务端 1 MiB JSON body 限制。
-- 业务成功始终 HTTP 200 + `code:20000`。校验失败、重复、找不到资源、非空账户删除均 HTTP 200 + `code:40000`，`data` 为可直接展示的中文错误字符串。存储或 Consul 失败为 HTTP 200 + `code:50000`。
-- 路径不存在沿用 HTTP 404 + `code:50000`；不支持的方法沿用 HTTP 405 + `code:50000`。
-- 所有时间为 RFC 3339 UTC 字符串。列表按 `created_at` 升序、`iid` 升序稳定排序。
-
-### 7.2 字段与校验
-
-| 字段 | 创建/编辑 | 校验与默认值 |
-|---|---|---|
-| `account` | 创建账户、创建主机必填；编辑取 URL | 1–64 字符，匹配账户正则。 |
-| `name` | 必填 | 去空格后 1–128 Unicode 字符。 |
-| `ip` | 必填 | 去空格后由 `net/netip.ParseAddr` 解析；拒绝 unspecified、multicast。每账户唯一。 |
-| `port` | 必填 | JSON 整数 1–65535，不接受字符串或小数。 |
-| `cpu` | 必填 | 去空格后 1–64 Unicode 字符。 |
-| `mem` | 必填 | 去空格后 1–64 Unicode 字符。 |
-| `os` | 可选 | 省略或空字符串默认为 `linux`；仅 `linux`、`windows`。 |
-| `group` | 可选 | 省略或空字符串默认为 `手工录入`；最长 128 字符。 |
-| `status` | 可选 | 省略或空字符串默认为 `RUNNING`；仅 `RUNNING`、`STOPPED`。 |
-
-未知 JSON 字段必须拒绝为 `40000`，避免客户端拼写错误被静默吞掉。`account` 中不允许 `/`、`.` 或空白；`name`/`group`/规格字段不得保留前后空白。
-
-### 7.3 端点
-
-| 方法 | 路径 | 请求 | 成功响应 `data` | 语义 |
-|---|---|---|---|---|
-| GET | `/api/third-party/accounts` | — | `[{"account":"edge","created_at":"..."}]` | 返回所有账户。 |
-| POST | `/api/third-party/accounts` | `{"account":"edge"}` | `{"account":"edge","created_at":"..."}` | 新建账户；存在则 `40000`。 |
-| DELETE | `/api/third-party/accounts/{account}` | — | `"第三方账户删除成功！"` | 仅空账户可删除；不存在或非空均 `40000`。 |
-| GET | `/api/third-party/hosts?account=edge` | `account` 必填 | `[{Host}]` | 返回该账户主机。 |
-| POST | `/api/third-party/hosts` | 下方创建示例 | `{Host}` | 账户必须存在，生成 iid 并注册 Service。 |
-| GET | `/api/third-party/hosts/{iid}` | — | `{Host}` | 读取单台主机。 |
-| PATCH | `/api/third-party/hosts/{iid}` | 下方编辑示例 | `{Host}` | 完整替换可编辑字段，保持 iid/account/created_at。 |
-| DELETE | `/api/third-party/hosts/{iid}` | — | `"第三方主机删除成功！"` | 注销 Service 并硬删除资产 KV。 |
-
-创建请求（`iid`、时间均不得出现）：
-
-```json
-{"account":"edge","name":"partner-web-01","ip":"10.20.30.40","port":9100,"cpu":"4核","mem":"8GB","os":"linux","group":"合作方","status":"RUNNING"}
-```
-
-编辑请求（`account` 不出现，所有必填的可编辑字段均出现）：
-
-```json
-{"name":"partner-web-01","ip":"10.20.30.41","port":9200,"cpu":"4核","mem":"8GB","os":"linux","group":"合作方","status":"RUNNING"}
-```
-
-成功 envelope 示例：
-
-```json
-{"code":20000,"data":{"iid":"third-...","account":"edge","name":"partner-web-01","ip":"10.20.30.40","port":9100,"cpu":"4核","mem":"8GB","os":"linux","group":"合作方","status":"RUNNING","created_at":"2026-11-02T16:00:00Z","updated_at":"2026-11-02T16:00:00Z"}}
-```
-
-失败示例：
-
-```json
-{"code":40000,"data":"字段 ip：必须是可路由的 IPv4 或 IPv6 地址！"}
-```
-
-## 8. 技术选型
+## 9. 技术选型
 
 | 层 | 选择 | 理由 |
 |---|---|---|
-| 后端 | Go 1.22、`net/http` | 与现有 `internal/httpapi` 一致，不扩大技术栈。 |
-| 存储 | Consul KV + Agent Service | 复用现有 `store.Store` 与资源发现方式。 |
-| UI | Vue 2 + Element UI | 与 `vue-consul/` 的现有实现一致。 |
-| 部署 | 既有 Docker Compose | 无新增运行时依赖。 |
+| 后端 | 既有 Go `net/http` | 遵循仓库现有 HTTP 分层。 |
+| 存储 | 既有 Consul KV / ECS Service | 产品明确禁止独立持久化模型。 |
+| UI | Vue 2 + Element UI | 复用现有编辑页。 |
 
-## 9. 关键权衡
+## 10. 关键权衡
 
-1. 选择独立 `/api/third-party/*` 而非复用 `/api/edit/commit`：后者包含云凭据和调度任务语义，不适合无 API 的资产。
-2. 选择 KV 作为列表权威来源、Service 为投影：Service 可能被健康检查影响或被外部管理，KV 可完整表达可编辑资产。
-3. 选择“账户必须为空才删除”而不级联：避免一次误操作删除多个可发现 Service。
-
-## 10. 里程碑（分阶段路线图）
-
-| 阶段 | 内容 | 验收标准 |
-|---|---|---|
-| M0 契约 | 三层文档与前后端接口锁定 | 本文第 7 节可供前端 mock/实现。 |
-| M1 后端 | 数据模型、CRUD、Consul 读写、测试 | httptest 验证 CRUD、认证、校验、KV/Service 副作用。 |
-| M2 前端 | Vue 2 页面、表单与错误态 | 可以完成账户和单机 CRUD。 |
-| M3 联调 | Compose 环境真实 Consul 联调 | 前后端构建与既有回归通过。 |
+1. 选择既有编辑模型而非独立 CRUD：最小化接口和运维模型变化，但现有写入模型以云同步任务为中心，必须先补足兼容契约。
+2. 选择全量覆盖而非单条删除：请求可完整表达目标状态，但必须在保存前可靠识别同一第三方归属的旧 Service。
 
 ## 11. 风险与待验证
 
-- [x] 契约不写入 scheduler 的 jobs/record 路径。
-- [x] 认证、响应码、IPv4/IPv6、唯一性和删除语义已明确。
-- [ ] 后端实现时验证 KV 与 Service 任一写失败的补偿与日志。
-- [ ] 在真实 Consul 验证 IPv6 TCP health check 的地址格式。
-- [ ] 产品验收前决定是否把第三方主机纳入 JumpServer 同步。
+- [x] 产品已确认：复用现有模型、`third_party`、全量覆盖、字段必填与可选归属规则。
+- [x] 事实核验：`internal/httpapi/handlers_edit.go:10-29` 中 `/api/edit/cloud` 只处理 GET，`/api/edit/commit` 返回未实现 `50000`。
+- [x] 事实核验：`flask-consul/views/edit_cloud.py:50-154` 的遗留 `edit/commit` 会创建 / 删除 `ConsulManager/jobs/<vendor>/<account>/{ecs,rds,redis}/...`，不适合无 API 的第三方。
+- [x] 事实核验：`internal/httpapi/handlers_resources.go:65-92` 的既有资源读取需要四段 `job_id`，并以 `<vendor>_<account>_ecs` 加 region Tag 查询 Service。
+- [ ] 产品确认：第三方完整集合究竟挂接到哪个既有写端点，以及请求 / 响应字段。
+- [ ] 产品确认：account/project 省略时的稳定归属值，以及 Service Name、region Tag、`job_id` 的映射。
+- [ ] 确认后，才可落实后端、前端和测试实现。

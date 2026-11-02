@@ -89,6 +89,8 @@ The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `a
 - If `npm install` fails on an old runtime, use Node 14+ for this Vue CLI 4 project.
 # 第三方手工主机：当前状态
 
-`third-party-cloud/spec.md` 已锁定“第三方”手工资产的 API、Consul 映射和验收契约；当前仓库**尚未实现**该 API 或 Vue 页面。不要向现有 `/api/edit/commit`、`/api/jobs` 或 `/api/nodes/cstecs` 发送第三方主机数据，也不要写入 `ConsulManager/jobs/third_party/*`，否则会改变现有云任务/调度器语义。
+“第三方”需求的产品决策已确认：复用既有 `/api/edit/cloud`、认证、响应 envelope 与 Consul ECS Service 模型；机器集合采用全量覆盖，禁止独立 `/api/third-party/*` API、独立 KV 或调度任务。
 
-待实现的联调入口、字段和 curl 样例以 `third-party-cloud/spec.md` 第 7 节为准。实现完成前本段不是可执行部署声明。
+当前仓库**尚未实现**对应写入：`/api/edit/cloud` 仅支持读取，`POST /api/edit/commit` 返回未实现错误；遗留 Flask 的同名写入会创建云同步任务，不能直接用于无 API 的第三方。不要向 `/api/edit/commit`、`/api/jobs` 或 `/api/nodes/cstecs` 发送第三方机器数据，也不要写入 `ConsulManager/jobs/third_party/*`。
+
+继续实现前，必须确认第三方完整机器集合所用的既有写端点、请求/成功响应字段，以及可选 account/project 缺省时的 Service 归属与 `job_id`/region 映射。详见 `third-party-cloud/spec.md` 第 8、11 节；因此目前没有可执行的第三方 curl 联调样例。
