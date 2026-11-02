@@ -1,7 +1,7 @@
 # spec — 第三方云厂商手工机器录入技术设计
 
 **产品形态**：TenSunS-go 既有云资源编辑模型中的 `third_party` 厂商扩展。
-**状态**：设计稿 v1.1（2026-11-03）；产品决策已确认，写入接口与既有模型存在事实冲突，尚不可实现。
+**状态**：设计稿 v1.2（2026-11-03）；产品决策已确认。经代码核验，现有写入能力尚不能承载该契约；在不新建模型的约束下暂不可实现。
 
 ---
 
@@ -30,7 +30,7 @@
 
 浏览器沿用现有 Vue 2 编辑页和 Bearer Token，读取仍经 `GET /api/edit/cloud`。完整集合必须经既有编辑写入契约保存；后端以当前 ECS Service 注册模型写入，并将缺失的旧 Service 注销。现有 `/api/nodes/res` 通过 Service 名称和 Tags 读取这些资源。
 
-**阻塞点**：当前代码没有满足该模型的写入契约；详见 §11。因此本节描述的是已确认目标架构，不是可调用的新接口。
+**阻塞点**：当前代码没有满足该模型的写入契约；详见 §11。因此本节描述的是已确认目标架构，不是可调用的新接口。产品决策已解除，剩余的是既有实现与目标契约的事实差异，不能由实现方自行补全。
 
 ## 4. 系统组件 / 模块
 
@@ -123,6 +123,6 @@
 - [x] 事实核验：`internal/httpapi/handlers_edit.go:10-29` 中 `/api/edit/cloud` 只处理 GET，`/api/edit/commit` 返回未实现 `50000`。
 - [x] 事实核验：`flask-consul/views/edit_cloud.py:50-154` 的遗留 `edit/commit` 会创建 / 删除 `ConsulManager/jobs/<vendor>/<account>/{ecs,rds,redis}/...`，不适合无 API 的第三方。
 - [x] 事实核验：`internal/httpapi/handlers_resources.go:65-92` 的既有资源读取需要四段 `job_id`，并以 `<vendor>_<account>_ecs` 加 region Tag 查询 Service。
-- [ ] 产品确认：第三方完整集合究竟挂接到哪个既有写端点，以及请求 / 响应字段。
-- [ ] 产品确认：account/project 省略时的稳定归属值，以及 Service Name、region Tag、`job_id` 的映射。
-- [ ] 确认后，才可落实后端、前端和测试实现。
+- [ ] 实现授权 / 契约补充：在既有 `POST /api/edit/commit` 中明确第三方完整集合的 JSON 容器和成功响应字段；当前 Go handler 固定返回未实现，Python 同名实现只接受云同步任务 `editJob`。
+- [ ] 实现授权 / 契约补充：明确 account/project 省略时的稳定归属值，以及 Service Name、region Tag、`job_id` 的映射；不能以默认值替代，因为这会改变已确认的可选语义。
+- [ ] 上述差异消除后，才可落实后端、前端和测试实现。
