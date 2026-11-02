@@ -108,3 +108,18 @@ curl -sS -H "Authorization: Bearer <TOKEN>" \
 ```
 
 Run the focused backend evidence with `go test ./internal/httpapi -run 'TestThirdParty'`; it covers authentication, required fields, IPv4/IPv6 parsing, port bounds, duplicate name / endpoint rejection, default/global mapping, cross-account and project-preserving reads, read-then-save deletion protection, Service replacement, and the no-job invariant.
+
+## Third-party UI verification
+
+Start the API and Vue app with the commands above, log in, then open **云主机列表** and select **编辑云资源**. Choose **第三方** to load the complete cross-account baseline from `GET /api/edit/cloud?vendor=third_party`. Add, edit, or remove rows and select **保存完整集合** to submit the authenticated existing `POST /api/edit/commit` request with `vendor=third_party`.
+
+The form validates names, specifications, IPv4/IPv6 addresses, ports `1–65535`, and duplicate names or `IP:port` before submission. Account and project are optional; an empty account becomes `default` at the API. This is a complete replacement: deleting a row and saving removes that Service, even when it belongs to another account. The UI uses no mock or separate CRUD API.
+
+Use disposable data only, for example `manual-v4` / `2C4G` / `10.0.0.10` / `9100` and `partner-v6` / `4C8G` / `2001:db8::10` / `9100` with account `partner` and project `core`.
+
+```bash
+cd vue-consul
+npm run lint
+npx vue-cli-service test:unit tests/unit/utils/third-party-hosts.spec.js
+npm run build:prod
+```
