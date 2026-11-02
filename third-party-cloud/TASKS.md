@@ -17,8 +17,9 @@
 - [x] **1.1** 在确认的既有编辑 handler 中增加 `third_party` 完整集合解析和严格校验。
 - [x] **1.2** 沿用既有 ECS Service 模型注册、更新和全量覆盖删除，且不写第三方 jobs / records。
 - [x] **1.3** 补表驱动测试：认证、IPv4/IPv6、端口、必填、重复名称、重复 `IP:端口` 和全量删除。
+- [x] **1.4** 扩展 `GET /api/edit/cloud?vendor=third_party`：从所有第三方 ECS Service 返回跨账户完整 `data.hosts` 基线，并回归验证读取后全量保存不会误删其他账户。
 
-**Phase 1 完成标志**：确认的现有端点在 mock Consul 中可保存并读取第三方集合。
+**Phase 1 完成标志**：确认的现有端点在 mock Consul 中可跨账户保存并读取第三方完整集合。
 
 ## Phase 2 — Vue 2 + Element UI ⏱⏱
 

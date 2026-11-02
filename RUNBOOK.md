@@ -93,6 +93,8 @@ The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `a
 
 第三方写入使用现有 Bearer 鉴权的 `POST /api/edit/commit`：`{"vendor":"third_party","hosts":[...]}`。`hosts` 是跨账户完整集合，成功响应为 `{"code":20000,"data":{"count":N}}`；缺失项会从既有 ECS Service 注册中注销。空账号内部映射为 `default`，region 固定 `global`，因此可通过 `/api/nodes/res?job_id=third_party/default/ecs/global` 读取。该分支绝不创建 `ConsulManager/jobs/*`、同步记录或独立 KV/CRUD。
 
+编辑前必须用现有已鉴权读取入口取得完整基线：`GET /api/edit/cloud?vendor=third_party` 返回 `data.hosts`，包含所有账户和项目归属的第三方主机。把该集合修改后再提交；不要按账户过滤后提交，否则全量覆盖会删除不在请求中的主机。
+
 使用已登录会话返回的 Bearer token（仅在本地受控环境使用）可验证写入；`hosts` 必须是目标完整集合，空数组会删除全部第三方机器：
 
 ```bash
@@ -100,7 +102,9 @@ curl -sS -X POST http://127.0.0.1:2026/api/edit/commit \
   -H "Authorization: Bearer <TOKEN>" -H 'Content-Type: application/json' \
   --data '{"vendor":"third_party","hosts":[{"name":"manual-v6","spec":"2C4G","ip":"2001:db8::10","port":9100}]}'
 curl -sS -H "Authorization: Bearer <TOKEN>" \
+  'http://127.0.0.1:2026/api/edit/cloud?vendor=third_party'
+curl -sS -H "Authorization: Bearer <TOKEN>" \
   'http://127.0.0.1:2026/api/nodes/res?job_id=third_party%2Fdefault%2Fecs%2Fglobal'
 ```
 
-Run the focused backend evidence with `go test ./internal/httpapi -run 'TestThirdPartyCommit'`; it covers authentication, required fields, IPv4/IPv6 parsing, port bounds, duplicate name / endpoint rejection, the default account/region mapping, Service replacement, and the no-job invariant.
+Run the focused backend evidence with `go test ./internal/httpapi -run 'TestThirdParty'`; it covers authentication, required fields, IPv4/IPv6 parsing, port bounds, duplicate name / endpoint rejection, default/global mapping, cross-account and project-preserving reads, read-then-save deletion protection, Service replacement, and the no-job invariant.

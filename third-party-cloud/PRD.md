@@ -43,6 +43,7 @@ TenSunS-go 当前的云厂商通过账号、任务和同步适配器把 ECS 注�
 
 - 保存后的 Service 使用既有 ECS Service / Meta 形状，使现有资源读取链路可读取。
 - 不写入独立第三方 KV；持久化只使用既有 Consul ECS Service 注册与注销模型。资源读取 job id 为 `third_party/<account>/ecs/global`。
+- `GET /api/edit/cloud?vendor=third_party` 返回 `data.hosts` 的跨账户完整集合，作为全量保存基线；不得按账户或项目过滤，以免保存时误删其他归属的主机。
 
 ## 4. 非功能需求
 

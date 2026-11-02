@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -146,7 +147,7 @@ func (s *Server) replaceThirdPartyServices(r *http.Request, hosts []thirdPartyHo
 		}
 	}
 	for id, service := range existing {
-		if service.Meta["vendor"] != "第三方" || !strings.HasPrefix(service.Name, thirdPartyVendor+"_") {
+		if !isThirdPartyService(service) {
 			continue
 		}
 		if _, found := current[id]; found {
@@ -169,6 +170,15 @@ func (s *Server) validationError(w http.ResponseWriter, message string) {
 }
 
 func (s *Server) editCloud(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("vendor") == thirdPartyVendor {
+		hosts, err := s.loadThirdPartyHosts(r)
+		if err != nil {
+			s.businessError(w, fmt.Errorf("load third-party ECS services: %w", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": map[string]any{"hosts": hosts}})
+		return
+	}
 	specs, err := s.loadJobSpecs(r)
 	if err != nil {
 		s.businessError(w, err)
@@ -191,6 +201,46 @@ func (s *Server) editCloud(w http.ResponseWriter, r *http.Request) {
 		result[vendor] = sortedKeys(accounts)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "cloud_dict": result})
+}
+
+// loadThirdPartyHosts reconstructs the complete edit baseline from every
+// third-party ECS Service, so a subsequent full replacement cannot drop a
+// host merely because it belongs to a different account.
+func (s *Server) loadThirdPartyHosts(r *http.Request) ([]thirdPartyHost, error) {
+	services, err := s.store.Services(r.Context(), "")
+	if err != nil {
+		return nil, err
+	}
+	hosts := make([]thirdPartyHost, 0)
+	for _, service := range services {
+		if !isThirdPartyService(service) {
+			continue
+		}
+		meta := service.Meta
+		account := strings.TrimSpace(meta["account"])
+		if account == "" {
+			account = defaultAccount
+		}
+		hosts = append(hosts, thirdPartyHost{
+			Name:    meta["name"],
+			Spec:    meta["cpu"],
+			IP:      service.Address,
+			Port:    service.Port,
+			Account: account,
+			Project: meta["project"],
+		})
+	}
+	sort.Slice(hosts, func(i, j int) bool {
+		if hosts[i].Account != hosts[j].Account {
+			return hosts[i].Account < hosts[j].Account
+		}
+		return hosts[i].Name < hosts[j].Name
+	})
+	return hosts, nil
+}
+
+func isThirdPartyService(service store.Service) bool {
+	return service.Meta["vendor"] == "第三方" && strings.HasPrefix(service.Name, thirdPartyVendor+"_")
 }
 
 func (s *Server) editFind(w http.ResponseWriter, r *http.Request) {
