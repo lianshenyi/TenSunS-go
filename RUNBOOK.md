@@ -87,3 +87,8 @@ The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `a
   EPS, and BSS for project/expiry discovery); credentials are never written to
   application logs.
 - If `npm install` fails on an old runtime, use Node 14+ for this Vue CLI 4 project.
+# 第三方手工主机：当前状态
+
+`third-party-cloud/spec.md` 已锁定“第三方”手工资产的 API、Consul 映射和验收契约；当前仓库**尚未实现**该 API 或 Vue 页面。不要向现有 `/api/edit/commit`、`/api/jobs` 或 `/api/nodes/cstecs` 发送第三方主机数据，也不要写入 `ConsulManager/jobs/third_party/*`，否则会改变现有云任务/调度器语义。
+
+待实现的联调入口、字段和 curl 样例以 `third-party-cloud/spec.md` 第 7 节为准。实现完成前本段不是可执行部署声明。
