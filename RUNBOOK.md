@@ -123,3 +123,43 @@ npm run lint
 npx vue-cli-service test:unit tests/unit/utils/third-party-hosts.spec.js
 npm run build:prod
 ```
+
+### Third-party integration evidence
+
+The following disposable, isolated real-Consul check passed against integration
+commit `6cec25a`. It used Consul `1.19.2` on `127.0.0.1:18580` and an API built
+from that commit on `127.0.0.1:20280`, with `scheduler_disabled=1`. The
+temporary API, Consul data directory, downloaded binary, and detached worktree
+were removed after the check.
+
+1. Save the complete collection with `default-v4` (`192.0.2.10:9100`, `2C4G`,
+   blank account, project `core`) and `partner-v6` (`[2001:db8::10]:9200`,
+   `4C8G`, account `partner`, project `edge`). Both saves use the authenticated
+   `POST /api/edit/commit` contract above.
+2. Read `GET /api/edit/cloud?vendor=third_party`, then inspect
+   `/v1/agent/services`, `/v1/agent/checks`, and `/v1/kv/?keys` on that local
+   Consul. The read returned both accounts; the blank account was `default`,
+   the region was `global`, and account/project values were retained.
+3. Confirm `third_party_default_ecs` registers `192.0.2.10:9100` and
+   `third_party_partner_ecs` registers `2001:db8::10:9200`. The latter has a
+   TCP health check whose target is bracketed as `[2001:db8::10]:9200`.
+4. Save a second complete collection containing only `partner-v6`. Confirm the
+   default Service is deregistered, the read returns only `partner-v6`, and no
+   key exists under `ConsulManager/jobs/third_party/` before or after either
+   save.
+
+The verification harness exited `0`; the two saves returned counts `2` and
+`1`, respectively. This exercises real Service write/replace/delete behavior,
+cross-account reads, IPv4/IPv6 handling, and the no-jobs invariant without
+using production data.
+
+### Node 26 unit-test baseline
+
+On Node `v26.4.0`, npm `11.17.0`, Vue `2.7.2`, and
+`@vue/test-utils` `1.3.0`, the implementation commit `6cec25a` was compared
+with its parent `f5bde97` using the same installed `vue-consul/node_modules`.
+Both full `npm run test:unit` runs had the same six pre-existing failures:
+one Hamburger assertion, one SvgIcon assertion, and four Breadcrumb async
+update/router assertions. The implementation added the third-party host suite
+and its two tests passed; it did not add failures. Treat those six failures as
+an existing test-suite risk, not third-party-feature coverage.
