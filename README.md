@@ -66,6 +66,18 @@ make env-init   # 等同于 ./scripts/gen-env.sh
 make up         # 等同于 ./scripts/compose.sh up -d --build，并打印服务状态
 ```
 
+使用 Docker Hub 已发布镜像时，先运行 `make env-init`，然后在 `.env` 中显式设置
+`docker_hub_namespace=<Docker Hub 用户名或组织名>` 和 `image_tag=<已发布的标签>`。
+命名空间及镜像发布状态尚待确认；两个应用镜像分别为
+`<namespace>/tensuns-go:<tag>` 和 `<namespace>/tensuns-go-web:<tag>`。
+
+```bash
+./scripts/compose.sh -f docker-compose.yml -f docker-compose.hub.yml pull
+./scripts/compose.sh -f docker-compose.yml -f docker-compose.hub.yml up -d --no-build
+```
+
+该方式沿用相同的 Consul 配置和持久化卷；本地构建仍使用 `make up`。
+
 > **如果 `docker compose` 报 `unknown shorthand flag: 'd' in -d`**
 >
 > 这不是本项目的编排文件有问题，而是**这台机器的 Docker 没装 Compose**：

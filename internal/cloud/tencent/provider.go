@@ -9,6 +9,8 @@ import (
 
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud/model"
+	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
+	"github.com/lianshenyi/TenSunS-go/internal/store"
 	cdb "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/cdb/v20170320"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
@@ -20,22 +22,31 @@ import (
 // Provider creates short-lived Tencent SDK clients so decrypted credentials do
 // not remain in memory between scheduler executions.
 type Provider struct {
-	Secrets  cloud.SecretResolver
-	Endpoint string // test-only HTTP endpoint override.
+	Secrets    cloud.SecretResolver
+	load       func(context.Context, string) (credentials, error)
+	newClients func(credentials) clients
+	Endpoint   string // test-only HTTP endpoint override.
 }
 
-func New(secrets cloud.SecretResolver) *Provider { return &Provider{Secrets: secrets} }
+func New(st store.Store, cipher *cryptox.Cipher) *Provider {
+	return &Provider{Secrets: cloud.SecretResolver{Store: st, Cipher: cipher}}
+}
 
 func (p *Provider) Group(ctx context.Context, account string) (map[string]string, error) {
-	secret, err := p.Secrets.Resolve(ctx, "tencent_cloud", account)
+	secret, err := p.resolve(ctx, account)
 	if err != nil {
 		return nil, err
 	}
 	// DCDB is the only Tencent API that exposes the shared ProjectId catalogue.
-	client, _ := dcdb.NewClient(common.NewCredential(secret.AccessKey, secret.SecretKey), "ap-guangzhou", p.profile())
-	response, err := client.DescribeProjectsWithContext(ctx, dcdb.NewDescribeProjectsRequest())
+	var response *dcdb.DescribeProjectsResponse
+	if p.newClients != nil {
+		response, err = p.newClients(credentials{secret.AccessKey, secret.SecretKey}).projects()
+	} else {
+		client, _ := dcdb.NewClient(common.NewCredential(secret.AccessKey, secret.SecretKey), "ap-guangzhou", p.profile())
+		response, err = client.DescribeProjectsWithContext(ctx, dcdb.NewDescribeProjectsRequest())
+	}
 	if err != nil {
-		return nil, fmt.Errorf("Tencent DCDB DescribeProjects: %w", err)
+		return nil, apiError{"DescribeProjects"}
 	}
 	groups := make(map[string]string)
 	if response.Response == nil {
@@ -50,7 +61,7 @@ func (p *Provider) Group(ctx context.Context, account string) (map[string]string
 }
 
 func (p *Provider) ECS(ctx context.Context, account, region string, external bool) (map[string]model.ECS, error) {
-	secret, err := p.Secrets.Resolve(ctx, "tencent_cloud", account)
+	secret, err := p.resolve(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +72,7 @@ func (p *Provider) ECS(ctx context.Context, account, region string, external boo
 		request.Offset, request.Limit = &offset, int64p(100)
 		resp, err := client.DescribeInstancesWithContext(ctx, request)
 		if err != nil {
-			return nil, fmt.Errorf("Tencent CVM DescribeInstances: %w", err)
+			return nil, apiError{"DescribeInstances"}
 		}
 		if resp.Response == nil {
 			break
@@ -71,7 +82,7 @@ func (p *Provider) ECS(ctx context.Context, account, region string, external boo
 				continue
 			}
 			ip := first(v.PrivateIpAddresses)
-			if external {
+			if external && first(v.PublicIpAddresses) != "" {
 				ip = first(v.PublicIpAddresses)
 			}
 			tags := map[string]string{}
@@ -98,7 +109,7 @@ func (p *Provider) ECS(ctx context.Context, account, region string, external boo
 }
 
 func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]model.RDS, error) {
-	secret, err := p.Secrets.Resolve(ctx, "tencent_cloud", account)
+	secret, err := p.resolve(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +118,7 @@ func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]
 	request.Limit = uint64p(2000)
 	resp, err := client.DescribeDBInstancesWithContext(ctx, request)
 	if err != nil {
-		return nil, fmt.Errorf("Tencent CDB DescribeDBInstances: %w", err)
+		return nil, apiError{"DescribeDBInstances"}
 	}
 	out := map[string]model.RDS{}
 	for _, v := range resp.Response.Items {
@@ -115,13 +126,13 @@ func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]
 			continue
 		}
 		ip := str(v.Vip)
-		out[*v.InstanceId] = model.RDS{Name: str(v.InstanceName), Domain: ip, IP: ip, Port: int(num(v.Vport)), Region: region, Group: strconv.FormatInt(num(v.ProjectId), 10), Status: cdbStatus(num(v.Status)), IType: cdbType(num(v.InstanceType)), Ver: str(v.EngineVersion), Exp: deadline(v.DeadlineTime), CPU: "无", Mem: "无", Disk: "无"}
+		out[*v.InstanceId] = model.RDS{Name: str(v.InstanceName), Domain: ip, IP: ip, Port: int(num(v.Vport)), Region: region, Group: strconv.FormatInt(num(v.ProjectId), 10), Status: cdbStatus(num(v.Status)), IType: cdbType(num(v.InstanceType)), Ver: str(v.EngineVersion), Exp: deadline(v.DeadlineTime), CPU: fmt.Sprintf("%d核", num(v.Cpu)), Mem: fmt.Sprintf("%dGB", num(v.Memory)/1024), Disk: fmt.Sprintf("%dGB", num(v.Volume))}
 	}
 	return out, nil
 }
 
 func (p *Provider) Redis(ctx context.Context, account, region string) (map[string]model.Redis, error) {
-	secret, err := p.Secrets.Resolve(ctx, "tencent_cloud", account)
+	secret, err := p.resolve(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +141,7 @@ func (p *Provider) Redis(ctx context.Context, account, region string) (map[strin
 	request.Limit = uint64p(1000)
 	resp, err := client.DescribeInstancesWithContext(ctx, request)
 	if err != nil {
-		return nil, fmt.Errorf("Tencent Redis DescribeInstances: %w", err)
+		return nil, apiError{"DescribeInstances"}
 	}
 	out := map[string]model.Redis{}
 	for _, v := range resp.Response.InstanceSet {
@@ -138,7 +149,7 @@ func (p *Provider) Redis(ctx context.Context, account, region string) (map[strin
 			continue
 		}
 		ip := str(v.WanIp)
-		out[*v.InstanceId] = model.Redis{Name: str(v.InstanceName), Domain: ip, IP: ip, Port: int(num(v.Port)), Region: region, Group: strconv.FormatInt(num(v.ProjectId), 10), Status: redisStatus(num(v.Status)), IType: redisType(num(v.Type)), Ver: str(v.Engine), Mem: fmt.Sprintf("%.0fMB", number(v.Size)), Exp: deadline(v.DeadlineTime)}
+		out[*v.InstanceId] = model.Redis{Name: str(v.InstanceName), Domain: ip, IP: ip, Port: int(num(v.Port)), Region: region, Group: strconv.FormatInt(num(v.ProjectId), 10), Status: redisStatus(num(v.Status)), IType: redisType(num(v.Type)), Ver: redisVersion(v.CurrentRedisVersion, v.Engine), Mem: fmt.Sprintf("%.0fMB", number(v.Size)), Exp: deadline(v.DeadlineTime)}
 	}
 	return out, nil
 }
@@ -215,3 +226,28 @@ func os(v string) string {
 }
 
 var _ cloud.Provider = (*Provider)(nil)
+
+type credentials struct{ accessKey, secretKey string }
+type clients struct {
+	projects func() (*dcdb.DescribeProjectsResponse, error)
+}
+type apiError struct{ operation string }
+
+func (e apiError) Error() string { return "Tencent Cloud " + e.operation + " request failed" }
+func (p *Provider) resolve(ctx context.Context, account string) (cloud.Credentials, error) {
+	if err := ctx.Err(); err != nil {
+		return cloud.Credentials{}, err
+	}
+	if p.load != nil {
+		c, err := p.load(ctx, account)
+		return cloud.Credentials{AccessKey: c.accessKey, SecretKey: c.secretKey}, err
+	}
+	return p.Secrets.Resolve(ctx, "tencent_cloud", account)
+}
+
+func redisVersion(current, engine *string) string {
+	if str(current) != "" {
+		return str(current)
+	}
+	return str(engine)
+}

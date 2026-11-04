@@ -55,7 +55,7 @@ func (s *Server) handleJMS(w http.ResponseWriter, r *http.Request) {
 		case "switch":
 			s.jmsSwitch(w, r)
 		case "sync":
-			s.jmsSyncPlaceholder(w)
+			s.jmsSync(w, r)
 		default:
 			s.notFound(w, r)
 		}
@@ -226,11 +226,18 @@ func (s *Server) jmsConfigGet(w http.ResponseWriter, r *http.Request) {
 	}
 	var custom map[string]any
 	_, _ = s.store.GetValue(r.Context(), "ConsulManager/jms/custom_ecs_info", &custom)
-	encryptedToken := stringValue(jmsInfo["token"])
-	token, err := s.cipher.Decrypt(encryptedToken)
-	if err != nil {
-		s.businessError(w, fmt.Errorf("decrypt jms token: %w", err))
-		return
+	authType := stringValue(jmsInfo["auth_type"])
+	if authType == "" && stringValue(jmsInfo["token"]) != "" {
+		authType = "private_token_legacy"
+	}
+	accessKeyID := ""
+	if authType == "access_key" {
+		var err error
+		accessKeyID, err = s.cipher.Decrypt(stringValue(jmsInfo["access_key_id"]))
+		if err != nil {
+			s.businessError(w, fmt.Errorf("decrypt jms Access Key ID: %w", err))
+			return
+		}
 	}
 	customJSON := ""
 	if len(custom) > 0 {
@@ -248,14 +255,17 @@ func (s *Server) jmsConfigGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code": 20000,
 		"jms_config": map[string]any{
-			"url":             stringValue(jmsInfo["url"]),
-			"token":           token,
-			"ver":             ver,
-			"linuxport":       protocolPort(ecsInfo["linux"]),
-			"linuxuid":        managementUser(ecsInfo["linux"]),
-			"winport":         protocolPort(ecsInfo["windows"]),
-			"winuid":          managementUser(ecsInfo["windows"]),
-			"custom_ecs_info": customJSON,
+			"url":                     stringValue(jmsInfo["url"]),
+			"auth_type":               authType,
+			"access_key_id":           accessKeyID,
+			"secret_configured":       authType == "access_key" && stringValue(jmsInfo["access_key_secret"]) != "",
+			"legacy_token_configured": authType == "private_token_legacy" && stringValue(jmsInfo["token"]) != "",
+			"ver":                     ver,
+			"linuxport":               protocolPort(ecsInfo["linux"]),
+			"linuxuid":                managementUser(ecsInfo["linux"]),
+			"winport":                 protocolPort(ecsInfo["windows"]),
+			"winuid":                  managementUser(ecsInfo["windows"]),
+			"custom_ecs_info":         customJSON,
 		},
 	})
 }
@@ -281,20 +291,82 @@ func (s *Server) jmsConfigPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	encrypted, err := s.cipher.Encrypt(stringValue(cfg["token"]))
+	var existing map[string]any
+	_, err := s.store.GetValue(r.Context(), "ConsulManager/jms/jms_info", &existing)
 	if err != nil {
 		s.businessError(w, err)
+		return
+	}
+	authType := stringValue(cfg["auth_type"])
+	if authType == "" {
+		// Missing auth_type is only tolerated for a pre-existing legacy record;
+		// every new configuration defaults to Access Key authentication.
+		if stringValue(existing["auth_type"]) == "private_token_legacy" || (stringValue(existing["auth_type"]) == "" && stringValue(existing["token"]) != "") {
+			authType = "private_token_legacy"
+		} else {
+			authType = "access_key"
+		}
+	}
+	jmsInfo := map[string]any{"url": stringValue(cfg["url"]), "auth_type": authType}
+	switch authType {
+	case "access_key":
+		accessKeyID := stringValue(cfg["access_key_id"])
+		secret := stringValue(cfg["access_key_secret"])
+		existingAuthType := stringValue(existing["auth_type"])
+		if existingAuthType == "" && stringValue(existing["token"]) != "" {
+			existingAuthType = "private_token_legacy"
+		}
+		if accessKeyID == "" && existingAuthType == "access_key" {
+			jmsInfo["access_key_id"] = stringValue(existing["access_key_id"])
+		} else if accessKeyID != "" {
+			encryptedID, err := s.cipher.Encrypt(accessKeyID)
+			if err != nil {
+				s.businessError(w, err)
+				return
+			}
+			jmsInfo["access_key_id"] = encryptedID
+		} else {
+			s.businessError(w, fmt.Errorf("JumpServer Access Key ID is required"))
+			return
+		}
+		if secret != "" {
+			encryptedSecret, err := s.cipher.Encrypt(secret)
+			if err != nil {
+				s.businessError(w, err)
+				return
+			}
+			jmsInfo["access_key_secret"] = encryptedSecret
+		} else if existingAuthType == "access_key" && accessKeyID == "" {
+			jmsInfo["access_key_secret"] = stringValue(existing["access_key_secret"])
+		} else {
+			s.businessError(w, fmt.Errorf("JumpServer Access Key Secret is required for a new or changed Access Key ID"))
+			return
+		}
+	case "private_token_legacy":
+		token := stringValue(cfg["token"])
+		if token == "" {
+			if stringValue(existing["token"]) == "" {
+				s.businessError(w, fmt.Errorf("legacy JumpServer token is required"))
+				return
+			}
+			jmsInfo["token"] = stringValue(existing["token"])
+		} else {
+			encryptedToken, err := s.cipher.Encrypt(token)
+			if err != nil {
+				s.businessError(w, err)
+				return
+			}
+			jmsInfo["token"] = encryptedToken
+		}
+	default:
+		s.businessError(w, fmt.Errorf("unsupported JumpServer authentication type %q", authType))
 		return
 	}
 	ver := stringValue(cfg["ver"])
 	if ver == "" {
 		ver = "V2"
 	}
-	jmsInfo := map[string]any{
-		"url":   stringValue(cfg["url"]),
-		"token": encrypted,
-		"ver":   ver,
-	}
+	jmsInfo["ver"] = ver
 	ecsInfo := map[string]any{
 		"linux":   []any{[]string{"ssh/" + stringValue(cfg["linuxport"])}, stringValue(cfg["linuxuid"])},
 		"windows": []any{[]string{"rdp/" + stringValue(cfg["winport"])}, stringValue(cfg["winuid"])},
@@ -366,11 +438,71 @@ func (s *Server) jmsSwitch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": fmt.Sprintf("【%s/%s】同步功能关闭！", vendor, account)})
 }
 
-func (s *Server) jmsSyncPlaceholder(w http.ResponseWriter) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"code": 50000,
-		"data": "Go 迁移阶段尚未实现：JumpServer V2/V3 同步器尚未接入。",
-	})
+// jmsSync mirrors the baseline POST /api/jms/sync: persist the node id and
+// interval, register the __main__:sync_jms.run task, run the first sync
+// synchronously (the frontend timeout is already 600s for this call), persist
+// the task KV only on success, and roll the task back when the first sync
+// fails.
+func (s *Server) jmsSync(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		JMSSync map[string]any `json:"jms_sync"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		s.businessError(w, err)
+		return
+	}
+	vendorDisplay := stringValue(req.JMSSync["vendor"])
+	vendor, ok := config.InternalVendor(vendorDisplay)
+	if !ok {
+		s.businessError(w, fmt.Errorf("unknown vendor %q", vendorDisplay))
+		return
+	}
+	account := stringValue(req.JMSSync["account"])
+	nodeID := stringValue(req.JMSSync["nodeid"])
+	if nodeID == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"code": 50000, "data": "新节点ID不能为空"})
+		return
+	}
+	interval, err := intValue(req.JMSSync["interval"])
+	if err != nil || interval <= 0 {
+		s.businessError(w, fmt.Errorf("invalid JumpServer sync interval"))
+		return
+	}
+	ctx := r.Context()
+	if err := s.store.PutKV(ctx, "ConsulManager/jms/"+vendor+"/"+account+"/node_id", map[string]any{"node_id": nodeID, "interval": interval}); err != nil {
+		s.businessError(w, err)
+		return
+	}
+	if s.jobs == nil {
+		s.businessError(w, fmt.Errorf("scheduler is not available"))
+		return
+	}
+	spec := scheduler.JobSpec{
+		ID:              vendor + "/" + account + "/jms",
+		Func:            "__main__:sync_jms.run",
+		Args:            []any{vendor, account},
+		Minutes:         interval,
+		Trigger:         "interval",
+		ReplaceExisting: true,
+	}
+	if err := s.jobs.Upsert(ctx, spec); err != nil {
+		s.businessError(w, err)
+		return
+	}
+	if err := s.jobs.RunNow(ctx, spec.ID); err != nil {
+		// A failed first sync must not leave a task behind that a restart
+		// would reload against the already-overwritten node config.
+		s.jobs.Remove(spec.ID)
+		_ = s.store.DeleteKV(ctx, "ConsulManager/jms/jobs/"+vendor+"/"+account)
+		s.logger.Warn("JumpServer first sync failed", "vendor", vendor, "account", account, "error", err)
+		writeJSON(w, http.StatusOK, map[string]any{"code": 50000, "data": fmt.Sprintf("【%s/%s】同步功能开启失败，请查看后端日志！", vendor, account)})
+		return
+	}
+	if err := s.store.PutKV(ctx, "ConsulManager/jms/jobs/"+vendor+"/"+account, spec); err != nil {
+		s.businessError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": 20000, "data": fmt.Sprintf("【%s/%s】同步JumpServer功能开启！首次同步完成", vendor, account)})
 }
 
 func protocolPort(value any) string {

@@ -218,6 +218,42 @@ python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
 - 镜像推送到 `ccr.ccs.tencentyun.com/devops-sre` 并做远端 digest 校验。
 - 生产域名 / TLS 反代。
 
+### 5.2 VIDE-39 第三方创建流程修复发布（提交 `689b05c`）
+
+验证日期：2026-11-03。
+
+验证主机：`10.0.10.236`（Rocky Linux 9.4，Docker 28.0.4），部署目录 `/opt/tensuns-go`。
+`origin/main` 的 `689b05c`（`fix: route third-party creation to host editor`）已发布为 API 与 Web。
+
+| 组件 | 发布前 | 发布后 |
+| --- | --- | --- |
+| 提交 | `5bc6812d9aff2fe01ac63a3a5b799af38fe5a5bb` | `689b05c536b266b15f02d710b0ef1b38385f141c` |
+| API 镜像 | `sha256:89338474fcd2…`（`tensuns-go:rollback-vide60-pre-689b05c`） | `sha256:2985ac5cd23e…`（`tensuns-go:latest`） |
+| Web 镜像 | `sha256:298056293ce3…`（`tensuns-go-web:rollback-vide60-pre-689b05c`） | `sha256:b87b78b4a8dd…`（`tensuns-go-web:latest`） |
+
+发布步骤与结果：
+
+- 发布前备份 `/opt/tensuns-go-backups/pre-vide60-20261103033506`：工作树源码、`.env`、`docker-compose.yml`、
+  `deploy/`、`scripts/`、三个容器 `inspect`、`docker save` 的镜像归档、Consul KV 与服务快照。
+- `git checkout -B deploy/vide60-689b05c 689b05c…`，工作树与 `origin/main` 无差异。
+- `docker build --progress=plain` 分别构建 API 与 Web（`tensuns-go:release-vide60-689b05c`、
+  `tensuns-go-web:release-vide60-689b05c`），并把运行中镜像打回滚标签。
+- `docker compose up -d --no-build --no-deps api` 后轮询至 `healthy`（3 次轮询），
+  再 `docker compose up -d --no-build --no-deps web` 并轮询至 HTTP 200。
+- 最终容器：`tensuns-go-consul`（healthy，未重启）、`tensuns-go-api`（healthy）、
+  `tensuns-go-web`（up）；API 启动日志 `version=689b05c commit=689b05c536b2…`。
+- `scripts/smoke.py` 直连 `http://127.0.0.1:2026` 与经 Nginx 代理 `http://127.0.0.1:1026`
+  均输出 `PASS: login, info, jobs, edit/cloud, nodes/res, jms/list, jms/config`。
+- 浏览器验证：新增云资源选择第三方后只显示说明与「前往第三方主机维护」，点击进入完整主机集合编辑器；
+  整个过程只发出 `GET /api/edit/cloud?vendor=third_party`，`POST /api/jobs` 调用数为 0。
+- 旧请求 `POST /api/jobs`（`dialogStatus=create`、`vendor=third_party`）返回
+  `{"code":40000,"data":"第三方主机请通过“编辑云资源”维护，不创建同步任务"}`，
+  且 `ConsulManager/jobs/third_party/` 数量保持 0。
+- Consul 数据未变：发布前后 KV 均为 25 个键，键集合无增无减；服务目录标签集合一致。
+  唯一值变化是调度器自身周期写入的 `ConsulManager/record/jms/pve/pve`（`update` 时间戳）。
+- 回滚脚本 `/opt/tensuns-go/rollback-vide60.sh`（已 `bash -n` 校验）可恢复 `5bc6812` 的源码、
+  `.env` 与镜像，并重建两个容器后重跑 smoke。
+
 ## 6. 安全与提交约定
 
 - 禁止提交 `ConsulManager/assets/secret/skey`、`bak-skey*`、真实云厂商 AK/SK、JumpServer Token、`.env` 或部署密码。

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,18 +13,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lianshenyi/TenSunS-go/internal/accounts"
 	"github.com/lianshenyi/TenSunS-go/internal/auth"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud"
+	"github.com/lianshenyi/TenSunS-go/internal/cloud/model"
 	"github.com/lianshenyi/TenSunS-go/internal/consulmock"
 	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
 	"github.com/lianshenyi/TenSunS-go/internal/jobs"
 	"github.com/lianshenyi/TenSunS-go/internal/scheduler"
 	"github.com/lianshenyi/TenSunS-go/internal/store/consul"
+	syncservice "github.com/lianshenyi/TenSunS-go/internal/sync"
 )
 
 const testPassword = "test-password"
 
 type fixture struct {
 	api    *httptest.Server
+	server *Server
 	mock   *consulmock.Server
 	store  *consul.Store
 	sched  *scheduler.Scheduler
@@ -31,6 +37,25 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
+	return newFixtureWithProvider(t, nil, nil)
+}
+
+type httpFakeProvider struct{}
+
+func (httpFakeProvider) Group(context.Context, string) (map[string]string, error) {
+	return map[string]string{"group-1": "研发"}, nil
+}
+func (httpFakeProvider) ECS(context.Context, string, string, bool) (map[string]model.ECS, error) {
+	return nil, nil
+}
+func (httpFakeProvider) RDS(context.Context, string, string) (map[string]model.RDS, error) {
+	return nil, nil
+}
+func (httpFakeProvider) Redis(context.Context, string, string) (map[string]model.Redis, error) {
+	return nil, nil
+}
+
+func newFixtureWithProvider(t *testing.T, provider cloud.Provider, pveService func(*consul.Store, *cryptox.Cipher) syncservice.Service) *fixture {
 	t.Helper()
 	mock := consulmock.New()
 	if err := mock.SeedDemo(); err != nil {
@@ -50,12 +75,166 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	authSvc := auth.New(testPassword, cryptox.NewTokenSigner("0123456789abcdef0123456789abcdef"))
-	apiServer := httptest.NewServer(New(st, cipher, authSvc, sched, logger).Handler())
+	var api *Server
+	if provider == nil && pveService == nil {
+		api = New(st, cipher, authSvc, sched, logger)
+	} else {
+		registry := cloud.NewRegistry()
+		if provider != nil {
+			registry.Register("fake", provider)
+		}
+		cloudSync := syncservice.NewCloud(registry, st)
+		groups := accounts.GroupSynchronizer(cloudSync)
+		if pveService != nil {
+			groups = syncservice.NewVendorRouter(cloudSync, map[string]syncservice.Service{"pve": pveService(st, cipher)})
+		}
+		api = NewWithAccountCreator(st, cipher, authSvc, sched, accounts.NewCreator(st, cipher, groups, sched), logger)
+	}
+	apiServer := httptest.NewServer(api.Handler())
 	t.Cleanup(func() {
 		apiServer.Close()
 		sched.Close()
 	})
-	return &fixture{api: apiServer, mock: mock, store: st, sched: sched, cipher: cipher}
+	return &fixture{api: apiServer, server: api, mock: mock, store: st, sched: sched, cipher: cipher}
+}
+
+type jobSchedulerStub struct {
+	runNow func(context.Context, string) error
+}
+
+func (s jobSchedulerStub) NextRun(string) (time.Time, bool) { return time.Time{}, false }
+func (s jobSchedulerStub) Remove(string)                    {}
+func (s jobSchedulerStub) UpdateInterval(string, int) error { return nil }
+func (s jobSchedulerStub) Upsert(context.Context, scheduler.JobSpec) error {
+	return nil
+}
+func (s jobSchedulerStub) RunNow(ctx context.Context, id string) error {
+	return s.runNow(ctx, id)
+}
+
+func TestCreateCloudAccountWithFakeProvider(t *testing.T) {
+	f := newFixtureWithProvider(t, httpFakeProvider{}, nil)
+	token := f.login(t)
+	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+		"job_dict": map[string]any{
+			"dialogStatus": "create", "vendor": "fake", "account": "demo", "ak": "access", "sk": "secret",
+			"restype": []string{"group", "ecs", "rds"}, "region": []string{"test-1"}, "proj_interval": 60,
+			"ecs_interval": 10, "rds_interval": 20, "redis_interval": 20, "isextip": true,
+		},
+	})
+	if body["code"].(float64) != 20000 {
+		t.Fatalf("create response = %v", body)
+	}
+	var groups map[string]string
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/fake/group/demo", &groups); err != nil || !found || groups["group-1"] != "研发" {
+		t.Fatalf("groups found=%v err=%v value=%v", found, err, groups)
+	}
+	var credentials map[string]string
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/fake/aksk/demo", &credentials); err != nil || !found {
+		t.Fatalf("credentials found=%v err=%v", found, err)
+	}
+	if plain, err := f.cipher.Decrypt(credentials["sk"]); err != nil || plain != "secret" {
+		t.Fatalf("credential plaintext=%q err=%v", plain, err)
+	}
+	for _, id := range []string{"fake/demo/group", "fake/demo/ecs/test-1", "fake/demo/rds/test-1"} {
+		if _, found := f.mock.GetKV("ConsulManager/jobs/" + id); !found {
+			t.Fatalf("missing task %s", id)
+		}
+		if _, found := f.sched.NextRun(id); !found {
+			t.Fatalf("task not scheduled %s", id)
+		}
+	}
+}
+
+func TestCreateThirdPartyRedirectsToHostEditorWithoutTasks(t *testing.T) {
+	f := newFixtureWithProvider(t, httpFakeProvider{}, nil)
+	token := f.login(t)
+	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+		"job_dict": map[string]any{
+			"dialogStatus": "create", "vendor": "third_party", "account": "partner",
+			"restype": []string{"group", "ecs"}, "region": []string{"partner-region"},
+			"proj_interval": 60, "ecs_interval": 10,
+		},
+	})
+	if body["code"] != float64(40000) || body["data"] != "第三方主机请通过“编辑云资源”维护，不创建同步任务" {
+		t.Fatalf("create response = %v", body)
+	}
+	if _, found := f.mock.GetKV("ConsulManager/jobs/third_party/partner/group"); found {
+		t.Fatal("third-party cloud-account request created a group task")
+	}
+	if _, found := f.mock.GetKV("ConsulManager/jobs/third_party/partner/ecs/partner-region"); found {
+		t.Fatal("third-party cloud-account request created an ECS task")
+	}
+}
+
+// TestCreatePVECloudAccount drives the real POST /api/jobs path with the real
+// sync.PVE service, so the creator-written credential KV is consumed by the
+// exact reader that production uses.
+func TestCreatePVECloudAccount(t *testing.T) {
+	f := newFixtureWithProvider(t, nil, func(st *consul.Store, cipher *cryptox.Cipher) syncservice.Service {
+		return syncservice.NewPVE(st, cipher, nil)
+	})
+	token := f.login(t)
+	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+		"job_dict": map[string]any{
+			"dialogStatus": "create", "vendor": "pve", "account": "demo",
+			"api_base_url": "https://pve.example:8006/api2/json", "token_id": "reader@pve!tensuns", "token_secret": "plain-secret",
+			"tls_verify": false, "restype": []string{"group", "ecs"}, "region": []string{"lab-cluster"},
+			"proj_interval": 60, "ecs_interval": 10, "isextip": false,
+		},
+	})
+	if body["code"].(float64) != 20000 {
+		t.Fatalf("create response = %v", body)
+	}
+	var creds map[string]any
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/pve/api/demo", &creds); err != nil || !found {
+		t.Fatalf("pve credentials found=%v err=%v", found, err)
+	}
+	if plain, err := f.cipher.Decrypt(creds["token_secret"].(string)); err != nil || plain != "plain-secret" {
+		t.Fatalf("token secret plaintext=%q err=%v", plain, err)
+	}
+	if creds["api_base_url"] != "https://pve.example:8006/api2/json" || creds["token_id"] != "reader@pve!tensuns" || creds["cluster"] != "lab-cluster" || creds["tls_verify"] != false {
+		t.Fatalf("pve credentials = %#v", creds)
+	}
+	// sync.PVE.Group read the account KV above and wrote the group KV, which
+	// proves the creator-written shape matches the sync reader.
+	var groupKV map[string]string
+	if found, err := f.store.GetValue(context.Background(), "ConsulManager/assets/pve/group/demo", &groupKV); err != nil || !found || groupKV["lab-cluster"] != "lab-cluster" {
+		t.Fatalf("pve group found=%v err=%v value=%v", found, err, groupKV)
+	}
+	for _, id := range []string{"pve/demo/group", "pve/demo/ecs/lab-cluster"} {
+		if _, found := f.mock.GetKV("ConsulManager/jobs/" + id); !found {
+			t.Fatalf("missing task %s", id)
+		}
+		if _, found := f.sched.NextRun(id); !found {
+			t.Fatalf("task not scheduled %s", id)
+		}
+	}
+	if _, found := f.mock.GetKV("ConsulManager/assets/pve/aksk/demo"); found {
+		t.Fatal("unexpected aksk KV for PVE account")
+	}
+}
+
+func TestCreatePVECloudAccountRejectsMissingTokenCredentials(t *testing.T) {
+	f := newFixtureWithProvider(t, nil, func(st *consul.Store, cipher *cryptox.Cipher) syncservice.Service {
+		return syncservice.NewPVE(st, cipher, nil)
+	})
+	token := f.login(t)
+	_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+		"job_dict": map[string]any{
+			"dialogStatus": "create", "vendor": "pve", "account": "demo",
+			"restype": []string{"group"}, "proj_interval": 60,
+		},
+	})
+	if body["code"].(float64) != 50000 {
+		t.Fatalf("create response = %v", body)
+	}
+	if _, found := f.mock.GetKV("ConsulManager/assets/pve/api/demo"); found {
+		t.Fatal("credentials written for invalid PVE request")
+	}
+	if _, found := f.mock.GetKV("ConsulManager/jobs/pve/demo/group"); found {
+		t.Fatal("task persisted for invalid PVE request")
+	}
 }
 
 func (f *fixture) request(t *testing.T, method, path, token string, body any) (int, map[string]any) {
@@ -238,6 +417,38 @@ func TestResourceAndEditReadContracts(t *testing.T) {
 	}
 }
 
+func TestThirdPartyCommitAndCrossAccountRead(t *testing.T) {
+	f := newFixture(t)
+	token := f.login(t)
+	hosts := []map[string]any{
+		{"name": "default-v4", "spec": "2C4G", "ip": "10.0.0.2", "port": 9100, "project": "core"},
+		{"name": "partner-v6", "spec": "4C8G", "ip": "2001:db8::2", "port": 2222, "account": "partner", "project": "edge"},
+	}
+	_, saved := f.request(t, http.MethodPost, "/api/edit/commit", token, map[string]any{"vendor": "third_party", "hosts": hosts})
+	if saved["code"] != float64(20000) || saved["data"].(map[string]any)["count"] != float64(2) {
+		t.Fatalf("save response = %v", saved)
+	}
+	_, read := f.request(t, http.MethodGet, "/api/edit/cloud?vendor=third_party", token, nil)
+	readHosts := read["data"].(map[string]any)["hosts"].([]any)
+	if len(readHosts) != 2 || readHosts[0].(map[string]any)["account"] != "default" || readHosts[1].(map[string]any)["account"] != "partner" {
+		t.Fatalf("cross-account hosts = %v", read)
+	}
+	_, replaced := f.request(t, http.MethodPost, "/api/edit/commit", token, map[string]any{"vendor": "third_party", "hosts": readHosts[1:]})
+	if replaced["code"] != float64(20000) {
+		t.Fatalf("replace response = %v", replaced)
+	}
+	services, err := f.store.Services(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := services[thirdPartyServiceID("default-v4")]; found {
+		t.Fatal("full replacement did not remove stale host")
+	}
+	if _, found := f.mock.GetKV("ConsulManager/jobs/third_party/default/ecs/global"); found {
+		t.Fatal("third-party commit created a job")
+	}
+}
+
 func TestJMSContracts(t *testing.T) {
 	f := newFixture(t)
 	token := f.login(t)
@@ -265,8 +476,11 @@ func TestJMSContracts(t *testing.T) {
 
 	_, cfg := f.request(t, http.MethodGet, "/api/jms/config", token, nil)
 	jmsCfg := cfg["jms_config"].(map[string]any)
-	if jmsCfg["url"] != "https://jumpserver.example.com" || jmsCfg["token"] != "demo-jumpserver-admin-token" || jmsCfg["ver"] != "V3" {
+	if jmsCfg["url"] != "https://jumpserver.example.com" || jmsCfg["auth_type"] != "access_key" || jmsCfg["access_key_id"] != "demo-jumpserver-access-key" || jmsCfg["secret_configured"] != true || jmsCfg["ver"] != "V3" {
 		t.Fatalf("jms config = %v", jmsCfg)
+	}
+	if _, present := jmsCfg["access_key_secret"]; present || jmsCfg["legacy_token_configured"] != false {
+		t.Fatalf("JMS secret was exposed: %v", jmsCfg)
 	}
 	if jmsCfg["linuxport"] != "22" || jmsCfg["linuxuid"] != "root" || jmsCfg["winport"] != "3389" {
 		t.Fatalf("jms ecs info = %v", jmsCfg)
@@ -282,7 +496,7 @@ func TestJMSContracts(t *testing.T) {
 	customJSON := `{"prod-web": {"linux": [["ssh/2222"], "root"]}}`
 	_, saved := f.request(t, http.MethodPost, "/api/jms/config", token, map[string]any{
 		"jms_config": map[string]any{
-			"url": "https://jumpserver.example.com", "token": "new-token", "ver": "V3",
+			"url": "https://jumpserver.example.com", "auth_type": "access_key", "access_key_id": "new-access-key", "access_key_secret": "new-access-secret", "ver": "V3",
 			"linuxport": "22", "linuxuid": "root", "winport": "3389", "winuid": "Administrator",
 			"custom_ecs_info": customJSON,
 		},
@@ -291,13 +505,83 @@ func TestJMSContracts(t *testing.T) {
 		t.Fatalf("save config = %v", saved)
 	}
 	_, reread := f.request(t, http.MethodGet, "/api/jms/config", token, nil)
-	if reread["jms_config"].(map[string]any)["token"] != "new-token" {
-		t.Fatalf("token did not round trip: %v", reread)
+	if reread["jms_config"].(map[string]any)["access_key_id"] != "new-access-key" {
+		t.Fatalf("Access Key ID did not round trip: %v", reread)
 	}
 	raw, ok := f.mock.GetKV("ConsulManager/jms/jms_info")
-	if !ok || bytes.Contains(raw, []byte("new-token")) {
-		t.Fatalf("JMS token was not encrypted in Consul: %s", raw)
+	if !ok || bytes.Contains(raw, []byte("new-access-key")) || bytes.Contains(raw, []byte("new-access-secret")) {
+		t.Fatalf("JMS Access Key credentials were not encrypted in Consul")
 	}
+}
+
+func TestJMSAccessKeySecretIsWriteOnlyAndCanBePreserved(t *testing.T) {
+	f := newFixture(t)
+	token := f.login(t)
+	_, saved := f.request(t, http.MethodPost, "/api/jms/config", token, map[string]any{
+		"jms_config": map[string]any{
+			"url": "https://jumpserver.example.com", "auth_type": "access_key", "access_key_id": "key-one", "access_key_secret": "secret-one", "ver": "V3",
+			"linuxport": "22", "linuxuid": "root", "winport": "3389", "winuid": "Administrator",
+		},
+	})
+	if saved["code"].(float64) != 20000 {
+		t.Fatalf("initial save = %v", saved)
+	}
+	rawBefore, ok := f.mock.GetKV("ConsulManager/jms/jms_info")
+	if !ok {
+		t.Fatal("missing jms_info")
+	}
+	_, preserved := f.request(t, http.MethodPost, "/api/jms/config", token, map[string]any{
+		"jms_config": map[string]any{
+			"url": "https://jumpserver.example.com", "auth_type": "access_key", "ver": "V3",
+			"linuxport": "22", "linuxuid": "root", "winport": "3389", "winuid": "Administrator",
+		},
+	})
+	if preserved["code"].(float64) != 20000 {
+		t.Fatalf("save without secret = %v", preserved)
+	}
+	rawAfter, ok := f.mock.GetKV("ConsulManager/jms/jms_info")
+	if !ok || bytes.Contains(rawAfter, []byte("secret-one")) {
+		t.Fatal("secret was missing or stored in plaintext")
+	}
+	var before, after map[string]any
+	if err := json.Unmarshal(rawBefore, &before); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(rawAfter, &after); err != nil {
+		t.Fatal(err)
+	}
+	if before["access_key_secret"] != after["access_key_secret"] {
+		t.Fatal("empty update rotated or cleared the configured secret")
+	}
+	_, read := f.request(t, http.MethodGet, "/api/jms/config", token, nil)
+	if body := read["jms_config"].(map[string]any); body["access_key_id"] != "key-one" || body["secret_configured"] != true {
+		t.Fatalf("write-only secret config = %v", body)
+	}
+}
+
+func TestJMSLegacyTokenMigrationDoesNotExposeToken(t *testing.T) {
+	f := newFixture(t)
+	token := f.login(t)
+	encrypted, err := f.cipher.Encrypt("legacy-token-must-not-leak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.mock.SetKV("ConsulManager/jms/jms_info", map[string]any{"url": "https://jumpserver.example.com", "token": encrypted, "ver": "V2"}); err != nil {
+		t.Fatal(err)
+	}
+	_, response := f.request(t, http.MethodGet, "/api/jms/config", token, nil)
+	body := response["jms_config"].(map[string]any)
+	if body["auth_type"] != "private_token_legacy" || body["legacy_token_configured"] != true {
+		t.Fatalf("legacy config = %v", body)
+	}
+	if _, exposed := body["token"]; exposed || strings.Contains(stringify(response), "legacy-token-must-not-leak") {
+		t.Fatalf("legacy token leaked in response: %v", response)
+	}
+}
+
+func stringify(value any) string {
+	raw, _ := json.Marshal(value)
+	return string(raw)
 }
 
 func TestJobUpdateAndDelete(t *testing.T) {
@@ -327,4 +611,74 @@ func TestJobUpdateAndDelete(t *testing.T) {
 	if _, ok := f.sched.NextRun("alicloud/main/ecs/cn-hangzhou"); ok {
 		t.Fatal("job still scheduled after delete")
 	}
+}
+
+func TestJobRunContract(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		f := newFixture(t)
+		token := f.login(t)
+		_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+			"job_dict": map[string]any{"dialogStatus": "run", "jobid": "alicloud/main/ecs/cn-hangzhou"},
+		})
+		if body["code"].(float64) != 20000 || body["data"] != "10.23/14:12：ECS同步成功！总数：2，开机：1，关机：1" {
+			t.Fatalf("run response = %v", body)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		jobID string
+		jobs  JobScheduler
+	}{
+		{name: "missing task", jobID: "missing"},
+		{name: "invalid parameter", jobID: "   "},
+		{
+			name:  "execution failure is redacted",
+			jobID: "alicloud/main/ecs/cn-hangzhou",
+			jobs: jobSchedulerStub{runNow: func(context.Context, string) error {
+				return errors.New("provider rejected secret access-key")
+			}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			if tc.jobs != nil {
+				f.server.jobs = tc.jobs
+			}
+			token := f.login(t)
+			_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+				"job_dict": map[string]any{"dialogStatus": "run", "jobid": tc.jobID},
+			})
+			if body["code"].(float64) != 50000 || body["data"] != "请求处理失败，请查看后端日志！" {
+				t.Fatalf("run error response = %v", body)
+			}
+			if strings.Contains(body["data"].(string), "provider") || strings.Contains(body["data"].(string), "access-key") {
+				t.Fatalf("provider error leaked in response: %v", body)
+			}
+		})
+	}
+
+	t.Run("failure record is returned", func(t *testing.T) {
+		f := newFixture(t)
+		f.server.jobs = jobSchedulerStub{runNow: func(_ context.Context, id string) error {
+			// The sync layer writes a fixed, credential-safe failure record
+			// before it reports the provider error.
+			if err := f.mock.SetKV("ConsulManager/record/jobs/"+id, map[string]any{
+				"status": 50000, "count": "无", "on": 0, "off": 0, "update": "失败", "msg": "ECS同步失败",
+			}); err != nil {
+				return err
+			}
+			return errors.New("provider rejected secret access-key")
+		}}
+		token := f.login(t)
+		_, body := f.request(t, http.MethodPost, "/api/jobs", token, map[string]any{
+			"job_dict": map[string]any{"dialogStatus": "run", "jobid": "alicloud/main/ecs/cn-hangzhou"},
+		})
+		if body["code"].(float64) != 50000 || body["data"] != "失败：ECS同步失败" {
+			t.Fatalf("run failure response = %v", body)
+		}
+		if strings.Contains(body["data"].(string), "provider") || strings.Contains(body["data"].(string), "access-key") {
+			t.Fatalf("provider error leaked in response: %v", body)
+		}
+	})
 }

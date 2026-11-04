@@ -1,7 +1,7 @@
 # 🏷目录
 - [云主机自动同步JumpServer能做什么？](#云主机自动同步jumpserver能做什么)
 - [同步JumpServer功能如何开启？](#同步jumpserver功能如何开启)
-- [如何获取JumpServer永久token？](#如何获取jumpserver永久token)
+- [如何创建 JumpServer API Key？](#如何创建-jumpserver-api-key)
 - [什么是JumpServer的管理用户（v3版叫账号模版或特权用户）？](#什么是JumpServer的管理用户（v3版叫账号模版或特权用户）？)
 - [接入JumpServer时，全局通用主机【管理用户】信息该如何填写？](#接入jumpserver时全局通用主机管理用户信息该如何填写)
 - [接入JumpServer时，全局特殊主机【管理用户】信息该如何填写？](#接入jumpserver时全局特殊主机管理用户信息该如何填写)
@@ -17,18 +17,12 @@
 ## 同步JumpServer功能如何开启？
 <img width="584" alt="72b7ccbc370982566fece2325191d0d" src="https://user-images.githubusercontent.com/3349611/180848168-a2bafcfa-faa1-457d-8f5f-dcb07ad12d60.png">
 
-## 如何获取JumpServer永久token？
-- 登录JumpServer所在的主机，执行以下命令：
-```
-docker exec -it jms_core /bin/bash   #非容器化部署的JumpServer，不执行该行。
-cd /opt/jumpserver/apps
-python manage.py shell
-from users.models import User
-u = User.objects.get(username='admin')   #admin换成你的JumpServer管理员用户名。
-```
-- 该账号没有创建过token的执行以下命令：`u.create_private_token()`
-- 该账号已经创建过token的执行以下命令：`u.private_token`
-- 记录`PrivateToken: `后面的部分。(最后的`>`不要)
+## 如何创建 JumpServer API Key？
+- 在 JumpServer Web 的个人信息 → **API Key** 页面创建访问密钥；无需进入服务器 Shell。
+- 复制 Access Key ID 和创建时仅显示一次的 Secret Key 到 TenSunS。Secret 不会在
+  TenSunS 配置读取接口或页面中回显；轮换时才重新填写。
+- JumpServer 对每个用户最多支持 10 个访问密钥。建议为 TenSunS 创建权限最小、可追踪的
+  专用 Key，并按企业轮换策略撤销旧 Key。
 
 ## 什么是JumpServer的管理用户（v3版叫账号模版或特权用户）？
 - 管理用户(v3版叫账号模版 或 特权用户)是资产（被控服务器）上的 root，或拥有 NOPASSWD: ALL sudo 权限的用户， JumpServer 使用该用户来 `推送系统用户`、`获取资产硬件信息` 等。

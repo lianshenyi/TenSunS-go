@@ -20,19 +20,36 @@ import (
 	rdsmodel "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/rds/v3/model"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud/model"
+	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
+	"github.com/lianshenyi/TenSunS-go/internal/store"
 )
 
 type Provider struct {
 	Secrets cloud.SecretResolver
+	load    func(context.Context, string) (credentials, error)
+	group   func(credentials) ([]epsmodel.EpDetail, error)
 	// Endpoint overrides service endpoints in tests. Production uses Huawei's regional endpoints.
 	Endpoint string
 }
 
-func New(secrets cloud.SecretResolver) *Provider { return &Provider{Secrets: secrets} }
+func New(st store.Store, cipher *cryptox.Cipher) *Provider {
+	return &Provider{Secrets: cloud.SecretResolver{Store: st, Cipher: cipher}}
+}
 func (p *Provider) Group(ctx context.Context, account string) (map[string]string, error) {
-	s, err := p.Secrets.Resolve(ctx, "huaweicloud", account)
+	s, err := p.resolve(ctx, account)
 	if err != nil {
 		return nil, err
+	}
+	if p.group != nil {
+		projects, err := p.group(credentials{s.AccessKey, s.SecretKey})
+		if err != nil {
+			return nil, apiError{"ListEnterpriseProject"}
+		}
+		groups := map[string]string{}
+		for _, project := range projects {
+			groups[project.Id] = project.Name
+		}
+		return groups, nil
 	}
 	// EPS is account-global and its documented endpoint is in cn-north-4.
 	c := global.NewCredentialsBuilder().WithAk(s.AccessKey).WithSk(s.SecretKey).Build()
@@ -42,7 +59,7 @@ func (p *Provider) Group(ctx context.Context, account string) (map[string]string
 		limit := int32(1000)
 		response, err := client.ListEnterpriseProject(&epsmodel.ListEnterpriseProjectRequest{Offset: &offset, Limit: &limit})
 		if err != nil {
-			return nil, fmt.Errorf("Huawei EPS ListEnterpriseProject: %w", err)
+			return nil, apiError{"ListEnterpriseProject"}
 		}
 		if response.EnterpriseProjects == nil {
 			break
@@ -74,7 +91,7 @@ func (p *Provider) ECS(ctx context.Context, account, region string, external boo
 		limit := int32(100)
 		resp, err := client.ListServersDetails(&ecsmodel.ListServersDetailsRequest{Limit: &limit, Marker: marker})
 		if err != nil {
-			return nil, fmt.Errorf("Huawei ECS ListServersDetails: %w", err)
+			return nil, apiError{"ListServersDetails"}
 		}
 		if resp.Servers == nil {
 			break
@@ -101,7 +118,7 @@ func (p *Provider) ECS(ctx context.Context, account, region string, external boo
 }
 
 func (p *Provider) expires(ctx context.Context, account string) (map[string]string, error) {
-	s, err := p.Secrets.Resolve(ctx, "huaweicloud", account)
+	s, err := p.resolve(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +130,7 @@ func (p *Provider) expires(ctx context.Context, account string) (map[string]stri
 	status := []int32{2}
 	response, err := client.ListPayPerUseCustomerResources(&bssmodel.ListPayPerUseCustomerResourcesRequest{Body: &bssmodel.QueryResourcesReq{Limit: &limit, OnlyMainResource: &onlyMain, StatusList: &status}})
 	if err != nil {
-		return nil, fmt.Errorf("Huawei BSS ListPayPerUseCustomerResources: %w", err)
+		return nil, apiError{"ListPayPerUseCustomerResources"}
 	}
 	expires := make(map[string]string)
 	if response.Data != nil {
@@ -136,7 +153,7 @@ func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]
 		limit := int32(100)
 		resp, err := client.ListInstances(&rdsmodel.ListInstancesRequest{Limit: &limit, Offset: &offset})
 		if err != nil {
-			return nil, fmt.Errorf("Huawei RDS ListInstances: %w", err)
+			return nil, apiError{"ListInstances"}
 		}
 		if resp.Instances == nil {
 			break
@@ -149,7 +166,11 @@ func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]
 			if v.PrivateDnsNames != nil && len(*v.PrivateDnsNames) > 0 {
 				domain = (*v.PrivateDnsNames)[0]
 			}
-			out[v.Id] = model.RDS{Name: v.Name, Domain: domain, IP: v.PrivateIps[0], Port: int(v.Port), Region: region, Group: v.EnterpriseProjectId, Status: v.Status, IType: v.Type, Ver: v.Datastore.Version, Exp: "-", CPU: value(v.Cpu), Mem: value(v.Mem), Disk: "无"}
+			exp := "按量"
+			if v.ExpirationTime != nil {
+				exp = date(*v.ExpirationTime)
+			}
+			out[v.Id] = model.RDS{Name: v.Name, Domain: domain, IP: v.PrivateIps[0], Port: int(v.Port), Region: region, Group: v.EnterpriseProjectId, Status: v.Status, IType: v.Type, Ver: v.Datastore.Version, Exp: exp, CPU: value(v.Cpu) + "核", Mem: value(v.Mem) + "GB", Disk: "无"}
 		}
 		if resp.TotalCount == nil || int32(len(out)) >= *resp.TotalCount || len(*resp.Instances) == 0 {
 			break
@@ -170,14 +191,21 @@ func (p *Provider) Redis(ctx context.Context, account, region string) (map[strin
 		limit := int32(1000)
 		resp, err := client.ListInstances(&dcsmodel.ListInstancesRequest{Limit: &limit, Offset: &offset, IncludeFailure: &no, IncludeDelete: &no})
 		if err != nil {
-			return nil, fmt.Errorf("Huawei DCS ListInstances: %w", err)
+			return nil, apiError{"ListInstances"}
 		}
 		if resp.Instances == nil {
 			break
 		}
 		for _, v := range *resp.Instances {
 			id, ip := value(v.InstanceId), value(v.Ip)
-			out[id] = model.Redis{Name: value(v.Name), Domain: value(v.DomainName), IP: ip, Port: int(number(v.Port)), Region: region, Group: value(v.EnterpriseProjectId), Status: value(v.Status), IType: value(v.SpecCode), Ver: value(v.EngineVersion), Mem: fmt.Sprintf("%dMB", number(v.MaxMemory)), Exp: "-"}
+			if id == "" {
+				continue
+			}
+			domain := value(v.DomainName)
+			if domain == "" {
+				domain = ip
+			}
+			out[id] = model.Redis{Name: value(v.Name), Domain: domain, IP: ip, Port: int(number(v.Port)), Region: region, Group: value(v.EnterpriseProjectId), Status: value(v.Status), IType: value(v.SpecCode), Ver: value(v.EngineVersion), Mem: fmt.Sprintf("%dMB", number(v.MaxMemory)), Exp: "-"}
 		}
 		if resp.InstanceNum == nil || int32(len(out)) >= *resp.InstanceNum || len(*resp.Instances) == 0 {
 			break
@@ -187,7 +215,7 @@ func (p *Provider) Redis(ctx context.Context, account, region string) (map[strin
 	return out, nil
 }
 func (p *Provider) credential(ctx context.Context, account string) (*basic.Credentials, error) {
-	s, err := p.Secrets.Resolve(ctx, "huaweicloud", account)
+	s, err := p.resolve(ctx, account)
 	if err != nil {
 		return nil, err
 	}
@@ -249,3 +277,18 @@ func (p *Provider) endpoint(defaultEndpoint string) string {
 }
 
 var _ cloud.Provider = (*Provider)(nil)
+
+type credentials struct{ accessKey, secretKey string }
+type apiError struct{ operation string }
+
+func (e apiError) Error() string { return "Huawei Cloud " + e.operation + " request failed" }
+func (p *Provider) resolve(ctx context.Context, account string) (cloud.Credentials, error) {
+	if err := ctx.Err(); err != nil {
+		return cloud.Credentials{}, err
+	}
+	if p.load != nil {
+		c, err := p.load(ctx, account)
+		return cloud.Credentials{AccessKey: c.accessKey, SecretKey: c.secretKey}, err
+	}
+	return p.Secrets.Resolve(ctx, "huaweicloud", account)
+}

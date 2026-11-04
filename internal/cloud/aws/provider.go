@@ -1,6 +1,6 @@
 // Package awscloud adapts the official AWS SDK v2 responses to TenSunS's
 // stable provider model.
-package awscloud
+package aws
 
 import (
 	"context"
@@ -11,10 +11,13 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/elasticache"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud"
 	"github.com/lianshenyi/TenSunS-go/internal/cloud/model"
+	"github.com/lianshenyi/TenSunS-go/internal/cryptox"
+	"github.com/lianshenyi/TenSunS-go/internal/store"
 )
 
 type ec2API interface {
@@ -31,11 +34,14 @@ type cacheAPI interface {
 // plaintext secrets between scheduler runs.
 type Provider struct {
 	Secrets cloud.SecretResolver
+	load    func(context.Context, string) (credentialsValue, error)
 	// Endpoint overrides AWS service endpoints in tests. Production leaves it empty.
 	Endpoint string
 }
 
-func New(secrets cloud.SecretResolver) *Provider { return &Provider{Secrets: secrets} }
+func New(st store.Store, cipher *cryptox.Cipher) *Provider {
+	return &Provider{Secrets: cloud.SecretResolver{Store: st, Cipher: cipher}}
+}
 
 func (p *Provider) Group(context.Context, string) (map[string]string, error) {
 	return map[string]string{"1": "1"}, nil
@@ -51,7 +57,7 @@ func (p *Provider) ECS(ctx context.Context, account, region string, externalIP b
 	for {
 		response, err := ec2client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{NextToken: next})
 		if err != nil {
-			return nil, fmt.Errorf("AWS EC2 DescribeInstances: %w", err)
+			return nil, apiError{"DescribeInstances"}
 		}
 		for _, reservation := range response.Reservations {
 			for _, instance := range reservation.Instances {
@@ -74,7 +80,7 @@ func (p *Provider) ECS(ctx context.Context, account, region string, externalIP b
 				if instance.CpuOptions != nil {
 					cpu = aws.ToInt32(instance.CpuOptions.CoreCount) * aws.ToInt32(instance.CpuOptions.ThreadsPerCore)
 				}
-				out[id] = model.ECS{Name: name, Group: "无", OSType: osType(aws.ToString(instance.PlatformDetails)), Status: string(instance.State.Name), Region: region, IP: ip, CPU: fmt.Sprintf("%d核", cpu), Mem: "0", Exp: "按量"}
+				out[id] = model.ECS{Name: name, Group: "无", OSType: osType(aws.ToString(instance.PlatformDetails)), Status: string(instance.State.Name), Region: region, IP: ip, CPU: fmt.Sprintf("%d核", cpu), Mem: "", Exp: "按量", Tags: tags(instance.Tags)}
 			}
 		}
 		if aws.ToString(response.NextToken) == "" {
@@ -95,15 +101,20 @@ func (p *Provider) RDS(ctx context.Context, account, region string) (map[string]
 	for {
 		response, err := rdsclient.DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{Marker: marker})
 		if err != nil {
-			return nil, fmt.Errorf("AWS RDS DescribeDBInstances: %w", err)
+			return nil, apiError{"DescribeDBInstances"}
 		}
 		for _, instance := range response.DBInstances {
 			id := aws.ToString(instance.DBInstanceIdentifier)
-			if id == "" || instance.Endpoint == nil {
+			if id == "" || !strings.EqualFold(aws.ToString(instance.Engine), "mysql") {
 				continue
 			}
-			domain := aws.ToString(instance.Endpoint.Address)
-			out[id] = model.RDS{Name: id, Domain: domain, IP: domain, Port: int(aws.ToInt32(instance.Endpoint.Port)), Region: region, Group: aws.ToString(instance.DBClusterIdentifier), Status: aws.ToString(instance.DBInstanceStatus), IType: aws.ToString(instance.Engine), Ver: aws.ToString(instance.EngineVersion), Exp: "按量", CPU: "0", Mem: "0", Disk: "0"}
+			domain := ""
+			port := 0
+			if instance.Endpoint != nil {
+				domain = aws.ToString(instance.Endpoint.Address)
+				port = int(aws.ToInt32(instance.Endpoint.Port))
+			}
+			out[id] = model.RDS{Name: id, Domain: domain, IP: domain, Port: port, Region: region, Group: aws.ToString(instance.DBClusterIdentifier), Status: aws.ToString(instance.DBInstanceStatus), IType: aws.ToString(instance.Engine), Ver: aws.ToString(instance.EngineVersion), Exp: "按量", CPU: "0", Mem: "0", Disk: "0"}
 		}
 		if aws.ToString(response.Marker) == "" {
 			break
@@ -123,7 +134,7 @@ func (p *Provider) Redis(ctx context.Context, account, region string) (map[strin
 	for {
 		response, err := cacheclient.DescribeCacheClusters(ctx, &elasticache.DescribeCacheClustersInput{ShowCacheNodeInfo: aws.Bool(true), Marker: marker})
 		if err != nil {
-			return nil, fmt.Errorf("AWS ElastiCache DescribeCacheClusters: %w", err)
+			return nil, apiError{"DescribeCacheClusters"}
 		}
 		for _, cluster := range response.CacheClusters {
 			id := aws.ToString(cluster.CacheClusterId)
@@ -131,10 +142,14 @@ func (p *Provider) Redis(ctx context.Context, account, region string) (map[strin
 				continue
 			}
 			ip := ""
+			port := 6379
 			if len(cluster.CacheNodes) > 0 && cluster.CacheNodes[0].Endpoint != nil {
 				ip = aws.ToString(cluster.CacheNodes[0].Endpoint.Address)
+				if n := aws.ToInt32(cluster.CacheNodes[0].Endpoint.Port); n != 0 {
+					port = int(n)
+				}
 			}
-			out[id] = model.Redis{Name: id, Domain: ip, IP: ip, Port: 6379, Region: region, Group: aws.ToString(cluster.ReplicationGroupId), Status: aws.ToString(cluster.CacheClusterStatus), IType: aws.ToString(cluster.Engine), Ver: aws.ToString(cluster.EngineVersion), Mem: "0", Exp: "按量"}
+			out[id] = model.Redis{Name: id, Domain: ip, IP: ip, Port: port, Region: region, Group: aws.ToString(cluster.ReplicationGroupId), Status: aws.ToString(cluster.CacheClusterStatus), IType: aws.ToString(cluster.CacheNodeType), Ver: aws.ToString(cluster.Engine), Mem: "0", Exp: "按量"}
 		}
 		if aws.ToString(response.Marker) == "" {
 			break
@@ -149,11 +164,24 @@ func (p *Provider) clients(ctx context.Context, account, region string) (ec2API,
 	return ec2client, err
 }
 func (p *Provider) allClients(ctx context.Context, account, region string) (*ec2.Client, *rds.Client, *elasticache.Client, error) {
-	secret, err := p.Secrets.Resolve(ctx, "awscloud", account)
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+	var ak, sk string
+	var err error
+	if p.load != nil {
+		var c credentialsValue
+		c, err = p.load(ctx, account)
+		ak, sk = c.accessKey, c.secretKey
+	} else {
+		var c cloud.Credentials
+		c, err = p.Secrets.Resolve(ctx, "awscloud", account)
+		ak, sk = c.AccessKey, c.SecretKey
+	}
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region), awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(secret.AccessKey, secret.SecretKey, "")))
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region), awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(ak, sk, "")))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("configure AWS SDK: %w", err)
 	}
@@ -182,3 +210,17 @@ func osType(value string) string {
 }
 
 var _ cloud.Provider = (*Provider)(nil)
+
+type credentialsValue struct{ accessKey, secretKey string }
+type apiError struct{ operation string }
+
+func (e apiError) Error() string { return "AWS " + e.operation + " request failed" }
+func tags(values []ec2types.Tag) map[string]string {
+	out := map[string]string{}
+	for _, tag := range values {
+		if tag.Key != nil && tag.Value != nil {
+			out[*tag.Key] = *tag.Value
+		}
+	}
+	return out
+}

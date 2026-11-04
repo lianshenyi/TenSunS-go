@@ -11,8 +11,8 @@ Usage:
     consul_url  defaults to http://127.0.0.1:18500/v1
     token       Consul ACL token; defaults to $CONSUL_TOKEN
 
-The seeded AES skey matches internal/consulmock so the demo JumpServer token
-decrypts with the same key the backend reads from Consul.
+The seeded AES skey matches internal/consulmock so the demo JumpServer Access
+Key credentials decrypt with the same key the backend reads from Consul.
 """
 import base64
 import json
@@ -103,7 +103,9 @@ seed = {
     },
     "ConsulManager/jms/custom_ecs_info": {},
     "ConsulManager/jms/jms_info": {
-        "url": "https://jumpserver.example.com", "token": encrypt("demo-jumpserver-admin-token"), "ver": "V3",
+        "url": "https://jumpserver.example.com", "auth_type": "access_key",
+        "access_key_id": encrypt("demo-jumpserver-access-key"),
+        "access_key_secret": encrypt("demo-jumpserver-access-secret"), "ver": "V3",
     },
 }
 for path, value in seed.items():

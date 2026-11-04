@@ -101,16 +101,14 @@ func (s *Sync) Redis(ctx context.Context, vendor, account, region string) error 
 // output. The Python contract falls back to "无" for every provider except
 // Huawei ECS, where a missing enterprise-project mapping aborts the sync.
 func (s *Sync) resolveGroups(ctx context.Context, vendor, account string) (map[string]string, error) {
-	if vendor != "tencent_cloud" && vendor != "huaweicloud" {
-		return nil, nil
-	}
+
 	groups := map[string]string{}
 	found, err := s.Store.GetValue(ctx, assetPath(vendor, "group", account), &groups)
 	if err != nil {
 		return nil, fmt.Errorf("read %s resource groups: %w", vendor, err)
 	}
-	if !found {
-		return groups, nil
+	if !found && vendor != "tencent_cloud" && vendor != "huaweicloud" {
+		return nil, nil
 	}
 	return groups, nil
 }
@@ -126,7 +124,11 @@ func (s *Sync) resolveECSGroups(ctx context.Context, vendor, account string, res
 			return fmt.Errorf("resource group %q for ECS %q is missing", resource.Group, id)
 		}
 		if !ok {
-			name = "无"
+			if vendor == "tencent_cloud" || vendor == "huaweicloud" {
+				name = "无"
+			} else {
+				name = resource.Group
+			}
 		}
 		resource.Group = name
 		resources[id] = resource
@@ -141,7 +143,11 @@ func (s *Sync) resolveRDSGroups(ctx context.Context, vendor, account string, res
 	for id, resource := range resources {
 		name := groups[resource.Group]
 		if name == "" {
-			name = "无"
+			if vendor == "tencent_cloud" || vendor == "huaweicloud" {
+				name = "无"
+			} else {
+				name = resource.Group
+			}
 		}
 		resource.Group = name
 		resources[id] = resource
@@ -156,7 +162,11 @@ func (s *Sync) resolveRedisGroups(ctx context.Context, vendor, account string, r
 	for id, resource := range resources {
 		name := groups[resource.Group]
 		if name == "" {
-			name = "无"
+			if vendor == "tencent_cloud" || vendor == "huaweicloud" {
+				name = "无"
+			} else {
+				name = resource.Group
+			}
 		}
 		resource.Group = name
 		resources[id] = resource
@@ -192,7 +202,11 @@ func (s *Sync) putRecord(ctx context.Context, vendor, account, kind, region stri
 }
 
 func (s *Sync) failure(ctx context.Context, vendor, account, kind, region string, cause error) error {
-	data := record{Count: "无", Update: "失败", Status: 50000, Msg: cause.Error()}
+	message := kind + "同步失败"
+	if kind == "group" {
+		message = "资源组同步失败"
+	}
+	data := record{Count: "无", Update: "失败", Status: 50000, Msg: message}
 	var old record
 	if found, err := s.Store.GetValue(ctx, recordPath(vendor, account, kind, region), &old); err == nil && found {
 		data.Count, data.On, data.Off = old.Count, old.On, old.Off

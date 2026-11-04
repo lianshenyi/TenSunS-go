@@ -1,4 +1,4 @@
-package awscloud
+package aws
 
 import (
 	"context"
