@@ -17,6 +17,20 @@ cd vue-consul && npm install && npm run dev
 
 Run `make smoke` from the repository root for the integrated compatibility check; it starts and stops its own mock Consul and API processes.
 
+## Docker Hub images
+
+Run `make env-init`, then set `docker_hub_namespace=<namespace>` and
+`image_tag=<published-tag>` in `.env`. The namespace and availability of the
+images must be confirmed by the publisher.
+
+```bash
+./scripts/compose.sh -f docker-compose.yml -f docker-compose.hub.yml pull
+./scripts/compose.sh -f docker-compose.yml -f docker-compose.hub.yml up -d --no-build
+```
+
+This retains the `tensuns-go-consul-data` volume. `make up` remains the local
+build entry point. See README for ports, generated credentials and troubleshooting.
+
 ## Environment variables
 
 - `CONSUL_ADDR=127.0.0.1:8500`

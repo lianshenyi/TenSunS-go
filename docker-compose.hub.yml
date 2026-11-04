@@ -1,0 +1,6 @@
+# Combine with docker-compose.yml and use `up --no-build` for published images.
+services:
+  api:
+    image: "${docker_hub_namespace:?set docker_hub_namespace in .env}/tensuns-go:${image_tag:-latest}"
+  web:
+    image: "${docker_hub_namespace:?set docker_hub_namespace in .env}/tensuns-go-web:${image_tag:-latest}"
