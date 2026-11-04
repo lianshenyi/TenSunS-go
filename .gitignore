@@ -30,6 +30,18 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+.cache/
+.eslintcache
+*.tsbuildinfo
+
+# Test reports and coverage
+coverage/
+.coverage
+.coverage.*
+htmlcov/
+test-results/
+playwright-report/
+blob-report/
 
 # Local environment and credentials
 .env
@@ -52,3 +64,4 @@ tmp/
 # Release archives and ad-hoc screenshots
 /*.tar
 /*-login-*.png
+/artifacts/screenshots/
