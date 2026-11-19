@@ -22,6 +22,7 @@ echo "==> building binaries"
 cd "$ROOT"
 go build -o "$TMP/consulmock" ./cmd/consulmock
 go build -o "$TMP/tensuns" ./cmd/tensuns
+go build -o "$TMP/smoke" ./cmd/smoke
 
 echo "==> starting consul mock on $CONSUL_ADDR"
 "$TMP/consulmock" -addr "$CONSUL_ADDR" >"$TMP/consul.log" 2>&1 &
@@ -40,15 +41,13 @@ admin_passwd="$PASSWORD" \
 BACKEND_PID=$!
 
 for _ in $(seq 1 100); do
-  if curl -fsS -X POST "http://$BACKEND_ADDR/api/user/login" \
-    -H 'Content-Type: application/json' \
-    -d "{\"username\":\"admin\",\"password\":\"$PASSWORD\"}" >/dev/null 2>&1; then
+  if curl -fsS "http://$BACKEND_ADDR/api/user/info" >/dev/null 2>&1; then
     break
   fi
   sleep 0.1
 done
 
 echo "==> running appendix-B checks"
-python3 "$ROOT/scripts/smoke.py" "http://$BACKEND_ADDR" "$PASSWORD"
+SMOKE_PASSWORD="$PASSWORD" "$TMP/smoke" "http://$BACKEND_ADDR"
 
 echo "==> smoke test complete"

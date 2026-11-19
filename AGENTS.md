@@ -112,7 +112,7 @@ Go 代码要求：
 | Vue 前端 | `tensuns-go-web` | `0.0.0.0:1026 -> 1026`，镜像 `tensuns-go-web:verify`，`/api/` 代理到后端 |
 | 验证环境变量 | `/opt/tensuns-go-verify/tensuns.env` | 权限 600 |
 | 登录密码 | `/opt/tensuns-go-verify/admin_passwd` | 权限 600，不写入仓库 |
-| 演示数据脚本 | `/opt/tensuns-go-verify/seed_demo.py` | 向真实 Consul 写入 14 个 KV、4 个服务 |
+| 演示数据 | 当前入口 `go run ./cmd/seed-demo` | 向真实 Consul 写入 14 个 KV、4 个服务 |
 
 部署和验证命令：
 
@@ -140,7 +140,7 @@ docker run -d --name tensuns-go-web --network tensuns-go-net \
 
 # 本机执行兼容性冒烟测试。仅在调度器启用时校验 nextime。
 PW=$(ssh root@10.0.10.236 'cat /opt/tensuns-go-verify/admin_passwd')
-python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
+SMOKE_PASSWORD="$PW" go run ./cmd/smoke http://10.0.10.236:2026
 ```
 
 本次验证结果：
@@ -205,8 +205,7 @@ python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
 - 读 Consul KV 时必须带 `X-Consul-Token` 请求头。`CONSUL_HTTP_TOKEN` 这个环境变量 curl 并不认，
   用它带 `curl` 会退化成匿名请求；ACL 默认 `deny` 下匿名读 KV 返回空数组（HTTP 200，容易误判成"没数据"）。
   正确写法：`curl -H "X-Consul-Token: $consul_token" http://127.0.0.1:18500/v1/kv/?keys`。
-- 冒烟脚本 `scripts/smoke.py` 会硬断言 `nextime` 是时间格式，调度器关闭时值为 `无`，
-  因此**必须在启用调度器的前提下跑冒烟**。
+- 当前 `make smoke` 和 `go run ./cmd/smoke` 对 `nextime` 接受 `MM.DD/HH:MM` 或 `无`。冒烟通过仅验证接口契约。
 - `docker compose up -d --build` 报 `unknown shorthand flag: 'd' in -d` 并打印整份 `docker --help`，
   原因是**该机器的 Docker 没装 Compose CLI 插件**（`docker compose` 不是有效子命令，
   docker CLI 便把 `-d` 当成自己的参数解析）。与 `docker-compose.yml` 无关。
@@ -242,7 +241,7 @@ python3 scripts/smoke.py http://10.0.10.236:2026 "$PW"
   再 `docker compose up -d --no-build --no-deps web` 并轮询至 HTTP 200。
 - 最终容器：`tensuns-go-consul`（healthy，未重启）、`tensuns-go-api`（healthy）、
   `tensuns-go-web`（up）；API 启动日志 `version=689b05c commit=689b05c536b2…`。
-- `scripts/smoke.py` 直连 `http://127.0.0.1:2026` 与经 Nginx 代理 `http://127.0.0.1:1026`
+- 当时的兼容性冒烟检查（当前入口为 `go run ./cmd/smoke`）直连 `http://127.0.0.1:2026` 与经 Nginx 代理 `http://127.0.0.1:1026`
   均输出 `PASS: login, info, jobs, edit/cloud, nodes/res, jms/list, jms/config`。
 - 浏览器验证：新增云资源选择第三方后只显示说明与「前往第三方主机维护」，点击进入完整主机集合编辑器；
   整个过程只发出 `GET /api/edit/cloud?vendor=third_party`，`POST /api/jobs` 调用数为 0。

@@ -15,7 +15,10 @@ CONSUL_ADDR=127.0.0.1:8500 ./bin/tensuns
 cd vue-consul && npm install && npm run dev
 ```
 
-Run `make smoke` from the repository root for the integrated compatibility check; it starts and stops its own mock Consul and API processes.
+Run `make smoke` from the repository root for the integrated compatibility check.
+It uses Go, Bash and curl, and starts and stops its own mock Consul and API
+processes on `127.0.0.1:18500` and `127.0.0.1:12026`. If a port is occupied,
+set `SMOKE_CONSUL_ADDR=<free_host:port>` or `SMOKE_BACKEND_ADDR=<free_host:port>`.
 
 ## Docker Hub images
 
@@ -88,7 +91,23 @@ PVE requires an HTTPS API base URL and a dedicated read-only privsep API Token. 
 
 ## Test data and verification
 
-`make smoke` provisions compatible demonstration data. Log in with the password printed/configured by that setup; no application password is stored in the repository.
+`make smoke` provisions compatible demonstration data. The local fixture uses `SMOKE_PASSWORD=<test_password>` when supplied.
+To smoke-test an already seeded API or its frontend proxy, set
+`SMOKE_PASSWORD=<admin_password>` and run `go run ./cmd/smoke http://<host>:<port>`.
+It checks login, user info, jobs, cloud accounts, resources and JumpServer reads.
+
+Use a disposable Consul instance to load the demo data over HTTP:
+
+```bash
+go run ./cmd/seed-demo http://127.0.0.1:18500/v1
+```
+
+The first argument takes precedence over `CONSUL_URL=<consul_v1_url>`.
+The second argument is an optional ACL token and takes precedence over
+`CONSUL_TOKEN=<consul_token>`. Prefer the environment variable for credentials.
+Seeding overwrites the demo keys, including the shared AES skey, and registers
+four services. If Consul denies the writes, check ACL permissions for KV and
+service registration before retrying.
 
 ```bash
 cd vue-consul
@@ -120,10 +139,10 @@ In **云主机列表 → 新增云资源**, select **Proxmox VE** and provide a 
 An authorized reviewer can verify the deployed identity contract without placing a password or token in source, shell history, logs, or issue comments:
 
 ```bash
-python3 scripts/verify-user-info.py http://10.0.10.236:1026
+go run ./cmd/verify-user-info http://<host>:<port>
 ```
 
-The script prompts on the controlling terminal with echo disabled, keeps the password and returned token in process memory only, and prints only PASS/FAIL. The minimum access needed is one valid administrator password for the target environment, supplied directly to the reviewer through an approved out-of-band channel; do not send it in this repository or a Multica comment.
+The command uses Bash to prompt on the controlling terminal with echo disabled. The password and returned token stay in process memory, and the output reports PASS/FAIL. The minimum access needed is one valid administrator password for the target environment, supplied directly to the reviewer through an approved out-of-band channel; do not send it in this repository or a Multica comment.
 
 The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `avatar="/harbor-mark.svg"`. `make smoke` checks the same avatar contract against its disposable local fixture.
 

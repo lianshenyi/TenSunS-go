@@ -142,7 +142,7 @@ cp .env.example .env       # 手动编辑三项占位符
 - 编排使用 `depends_on: service_healthy`，Consul 与后端都带健康检查，启动顺序自动保证。
 - Consul 数据保存在命名卷 `tensuns-go-consul-data` 中，`compose down` 不会删除；
   需要完全重置时执行 `./scripts/compose.sh down -v`。
-- 演示数据可另行灌入：`python3 scripts/seed_demo.py http://127.0.0.1:18500/v1 <consul_token>`。
+- 在专用演示 Consul 中可用 `go run ./cmd/seed-demo http://127.0.0.1:18500/v1` 灌入 14 个 KV 和 4 个服务。启用 ACL 时通过 `CONSUL_TOKEN` 提供令牌。灌种会覆盖同名数据和 AES skey。
 
 > ⚠️ 默认 `scheduler_disabled=1`，调度器不加载 Consul 任务。这是刻意为之：
 > 四家云厂商的 Go 同步适配器尚未接线，启用调度只会产生重复报错。
