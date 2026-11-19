@@ -53,8 +53,8 @@ var Vendors = map[string]string{
 	"pve":           "Proxmox VE",
 }
 
-// Regions contains the same region code -> display-name tables as
-// flask-consul/config.py. "none" is used by resource-group rows.
+// Regions maps region codes to display names used by the frontend.
+// The "none" code is used by resource-group rows.
 var Regions = map[string]map[string]string{
 	"awscloud": {
 		"none":           "无",

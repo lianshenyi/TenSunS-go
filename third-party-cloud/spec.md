@@ -120,7 +120,7 @@
 
 - [x] `0.1` / `0.2` 产品规则已确认：复用现有模型、`third_party`、全量覆盖、字段必填与可选归属规则；这不是整个 Phase 0 完成状态。
 - [x] 事实核验与扩展：`internal/httpapi/handlers_edit.go` 保持 `/api/edit/cloud` 的 GET 语义；`/api/edit/commit` 仅为 `vendor=third_party` 增加已批准的写入分支，其他厂商仍返回未实现 `50000`。
-- [x] 事实核验：`flask-consul/views/edit_cloud.py:50-154` 的遗留 `edit/commit` 会创建 / 删除 `ConsulManager/jobs/<vendor>/<account>/{ecs,rds,redis}/...`，不适合无 API 的第三方。
+- [x] 事实核验：[旧版 edit_cloud 实现](https://github.com/lianshenyi/TenSunS-go/blob/4a928807046f4130eb044088dae14409c9844fa8/flask-consul/views/edit_cloud.py#L50-L154) 的遗留 `edit/commit` 会创建 / 删除 `ConsulManager/jobs/<vendor>/<account>/{ecs,rds,redis}/...`，不适合无 API 的第三方。
 - [x] 事实核验：`internal/httpapi/handlers_resources.go:65-92` 的既有资源读取需要四段 `job_id`，并以 `<vendor>_<account>_ecs` 加 region Tag 查询 Service。
 - [x] `POST /api/edit/commit` 的 `vendor=third_party` 分支已获批：`hosts` 为完整集合，成功 data 返回 count；不创建任务或触发同步。
 - [x] 空账号规范化为 `default`，region 为 `global`；Service 为 `third_party_<account>_ecs`，job id 为 `third_party/<account>/ecs/global`；project 不参与命名。

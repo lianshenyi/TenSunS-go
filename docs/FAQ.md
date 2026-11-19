@@ -1,28 +1,21 @@
-### 查后端实时日志（先进入docker-compose.yml所在目录）
-```
-docker-compose logs --tail=50 -f flask-consul
-```
-### 查前端实时日志（先进入docker-compose.yml所在目录）
-```
-docker-compose logs --tail=50 -f nginx-consul
-```
-### 后端启动报错requests.exceptions.ConnectionError: HTTPConnectionPool(host='xxx', port=8500)
-![图片](https://user-images.githubusercontent.com/3349611/219944354-7be4c686-ff8e-4a03-8939-0fd6dedfb1b7.png)
-- 这是由于flask-consul容器无法连接到consul服务端，请检查容器到consul的网络是否通。
-- 可以检查下iptables防火墙规则，设置允许访问8500端口：
-```
-# 参考命令
-firewall-cmd --zone=public --add-port=8500/tcp --permanent
-或
-iptables -A INPUT -p tcp -m state --state NEW -m tcp --dport 8500 -j ACCEPT
+### 查看服务日志
+
+在仓库根目录运行：
+
+```bash
+./scripts/compose.sh logs --tail=50 -f api
+./scripts/compose.sh logs --tail=50 -f web
 ```
 
-### 检查consul连接是否正常？
+### Go API 启动时无法连接 Consul
+
+先检查 Consul 的健康状态和日志：
+
+```bash
+./scripts/compose.sh ps
+./scripts/compose.sh logs --tail=50 consul
 ```
-# 进入容器：
-docker-compose exec flask-consul sh
-# 如果flask-consul容器无法正常启动，可以进入nginx-consul容器测试
-docker-compose exec nginx-consul sh
-# 执行检查:
-nc -vz {consul_ip} 8500
-```
+
+Compose 中的 API 通过 `http://consul:8500/v1` 连接 Consul。确认 `.env` 中的
+`consul_token` 与初始化当前数据卷的 Consul 管理令牌一致。直接运行 Go API 时，
+确认 `consul_url` 指向可达的 Consul HTTP 地址并以 `/v1` 结尾。

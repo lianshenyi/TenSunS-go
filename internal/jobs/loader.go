@@ -13,7 +13,7 @@ import (
 // LoadFromConsul loads both cloud and JMS task KVs into the scheduler.
 //
 // Unknown func strings (for example stale exp/avd jobs) are logged and
-// skipped. Their KV is left untouched so a rollback to Python remains safe.
+// skipped. Their KV is left untouched so unsupported tasks can be recovered.
 func LoadFromConsul(ctx context.Context, st store.Store, sched *scheduler.Scheduler, logger *slog.Logger) (loaded, skipped int, err error) {
 	if logger == nil {
 		logger = slog.Default()

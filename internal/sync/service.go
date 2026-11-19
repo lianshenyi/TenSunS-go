@@ -12,7 +12,7 @@ import (
 )
 
 // Sync persists normalized provider output using the legacy Consul key and
-// service contracts, allowing an immediate rollback to the Python backend.
+// service contracts so existing Consul entries remain usable.
 type Sync struct {
 	Store     store.Store
 	Providers *cloud.Registry

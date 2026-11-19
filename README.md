@@ -11,11 +11,7 @@
 
 > 本仓库是二次开发项目，不是 TenSunS 上游仓库。原始项目、版权与贡献者信息请见 [starsliao/TenSunS](https://github.com/starsliao/TenSunS)。
 
-当前状态：
-
-- Go 后端骨架已完成配置加载、登录鉴权、AES/Token 兼容、Consul 存储、动态任务调度、任务加载、资源读取 API 与兼容性冒烟测试。
-- 云厂商同步、Consul 同步写入、JumpServer 客户端及写操作 API 仍在迁移中，详见 [Go 迁移进度](docs/Go迁移进度.md)。
-- `flask-consul/` 保留为迁移期间的 Python 行为参考；`vue-consul/` 是前端实现。
+后端使用 Go，前端使用 Vue。迁移契约和运行入口见 [Go 迁移进度](docs/Go迁移进度.md)。
 
 当前版本聚焦于以下能力：
 
@@ -144,9 +140,7 @@ cp .env.example .env       # 手动编辑三项占位符
   需要完全重置时执行 `./scripts/compose.sh down -v`。
 - 在专用演示 Consul 中可用 `go run ./cmd/seed-demo http://127.0.0.1:18500/v1` 灌入 14 个 KV 和 4 个服务。启用 ACL 时通过 `CONSUL_TOKEN` 提供令牌。灌种会覆盖同名数据和 AES skey。
 
-> ⚠️ 默认 `scheduler_disabled=1`，调度器不加载 Consul 任务。这是刻意为之：
-> 四家云厂商的 Go 同步适配器尚未接线，启用调度只会产生重复报错。
-> 需要校验任务调度行为时，临时把它改成 `0` 再重启后端。
+> 默认 `scheduler_disabled=1`。确认 Consul 中现有任务的账户与权限后，设置为 `0` 并重启后端即可启用调度。
 
 ### 单独构建
 
@@ -198,15 +192,12 @@ cmd/consulmock/     内存 Consul 测试服务
 internal/           Go 实现与测试
 scripts/            兼容性冒烟测试、演示数据灌入、Compose 环境适配与 .env 生成
 vue-consul/         Vue 前端
-flask-consul/       Python 迁移参考实现
 deploy/consul/      Compose 用的 Consul 配置模板与 ACL 引导脚本
 docs/               迁移基线、进度与使用文档
-install/            旧 Flask 版本的部署脚本，仅作历史参考
+install/            独立 Consul 安装脚本
 docker-compose.yml  Consul + Go 后端 + Vue 前端 一键编排
 .env.example        Compose 环境变量模板（复制为 .env 后使用）
 ```
-
-> `install/` 下的脚本仍指向旧 Flask 镜像，不适用于当前 Go 骨架；Go 阶段请使用 `Dockerfile` / `make go-image`。
 
 ## 📚文档
 
@@ -214,7 +205,7 @@ docker-compose.yml  Consul + Go 后端 + Vue 前端 一键编排
 - [如何把主机自动同步到 JumpServer](docs/如何把主机自动同步到JumpServer.md)
 - [开发模式调试说明](docs/开发模式调试说明.md)
 - [Go 重构迁移基线](docs/迁移基线.md)
-- [Go 迁移进度与骨架说明](docs/Go迁移进度.md)
+- [Go 迁移进度](docs/Go迁移进度.md)
 - [开发与部署约定（AGENTS.md）](AGENTS.md)
 - [FAQ](docs/FAQ.md)
 

@@ -14,15 +14,6 @@ Thumbs.db
 # Go
 /vendor/
 
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-.pytest_cache/
-.mypy_cache/
-
 # Node
 node_modules/
 vue-consul/dist/

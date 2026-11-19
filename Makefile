@@ -4,7 +4,7 @@
 # `docker-compose`（v1 二进制）之间选择，两者都没有时给出安装指引。
 COMPOSE ?= ./scripts/compose.sh
 
-.PHONY: help test smoke build image web-image web-dev go-test go-smoke go-build go-image legacy-build \
+.PHONY: help test smoke build image web-image web-dev go-test go-smoke go-build go-image \
         up down restart logs ps env-init env-regen build-all compose
 
 help:
@@ -15,7 +15,6 @@ help:
 	@echo "  make image       构建 Go 后端容器镜像"
 	@echo "  make web-image   构建 Vue 前端 Nginx 镜像"
 	@echo "  make web-dev     启动 Vue 本地开发服务"
-	@echo "  make legacy-build  构建旧 Flask 镜像（仅迁移参考）"
 	@echo ""
 	@echo "docker compose 一键启动（Consul + Go API + Vue 前端）"
 	@echo "  ./scripts/gen-env.sh          1. 生成 .env（随机生成 Token 与 admin 密码）"
@@ -62,9 +61,6 @@ web-image:
 
 web-dev:
 	cd vue-consul && npm install && npm run dev
-
-legacy-build:
-	cd flask-consul && docker build -t flask-consul:latest .
 
 # --- docker compose -----------------------------------------------------------
 

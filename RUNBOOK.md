@@ -3,15 +3,18 @@
 ## Services and ports
 
 - Go API: `127.0.0.1:2026`
-- Vue development server: `127.0.0.1:1026` (or the port reported by Vue CLI)
+- Vue development server: `127.0.0.1:9528` (or the port reported by Vue CLI)
 - Consul: `127.0.0.1:8500` (use the in-memory mock for smoke testing)
 
 ## Start locally
 
+Install Go 1.22 or later, Node.js 14, npm, Make, Bash and curl. Use the
+Compose workflow for the bundled Consul, API and Web services.
+
 ```bash
 make build
 ./bin/consulmock -addr 127.0.0.1:8500
-CONSUL_ADDR=127.0.0.1:8500 ./bin/tensuns
+consul_url=http://127.0.0.1:8500/v1 scheduler_disabled=1 ./bin/tensuns
 cd vue-consul && npm install && npm run dev
 ```
 
@@ -34,9 +37,24 @@ images must be confirmed by the publisher.
 This retains the `tensuns-go-consul-data` volume. `make up` remains the local
 build entry point. See README for ports, generated credentials and troubleshooting.
 
+## Flask retirement and rollback
+
+Use the Go API and Web Compose services. The [standalone Consul installer](install/docker-compose/consul_install_only.sh) is available for Consul-only setup. The legacy implementation is recorded in the [retirement baseline](https://github.com/lianshenyi/TenSunS-go/tree/4a928807046f4130eb044088dae14409c9844fa8).
+
+The test host retains the Go API and Web images from that baseline under
+`tensuns-go:rollback-vide117-retirement-4a92880` and
+`tensuns-go-web:rollback-vide117-retirement-4a92880`. Keep these images out
+of image cleanup during the rollback window. Before a rollback, verify
+the image IDs against the VIDE-117 record and check the saved Go version
+against the current Consul data and JumpServer authentication in isolation.
+Keep one active scheduler per Consul dataset. This source cleanup requires no
+data migration.
+
 ## Environment variables
 
-- `CONSUL_ADDR=127.0.0.1:8500`
+- `consul_url=http://127.0.0.1:8500/v1`
+- `consul_token=<consul_acl_token>` (required for a Consul with ACLs enabled)
+- `admin_passwd=<admin_password>`
 - `TENSUNS_API=http://127.0.0.1:2026` (optional Vue dev proxy override)
 
 AWS account credentials are stored only in Consul at
@@ -149,7 +167,7 @@ The expected authenticated response is `roles=["admin"]`, `name="admin"`, and `a
 ## Common problems
 
 - If the Vue app cannot call `/api`, start the Go API first and check `TENSUNS_API` / `vue.config.js` proxy settings.
-- If API startup fails, confirm Consul is listening at `CONSUL_ADDR` and its KV data has been seeded.
+- If API startup fails, check `consul_url`, Consul health and the Consul ACL token.
 - If an AWS job writes a failure record, check its `msg` in
   `ConsulManager/record/jobs/awscloud/<account>/<type>/<region>` and confirm
   the account has least-privilege permissions for EC2, RDS, and ElastiCache.

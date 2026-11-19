@@ -6,28 +6,15 @@
 
 - 本仓库是 [TenSunS](https://github.com/starsliao/TenSunS) 的二次开发版本，不是上游仓库。
 - 目标范围：多云资源（分组、ECS、云 MySQL、云 Redis）同步到 Consul，并把 ECS 同步到 JumpServer。
-- 当前后端正在从 Flask 迁移到 Go；`flask-consul/` 仅作为行为对照保留。
+- 当前后端使用 Go。旧运行时与专用构建、发布、安装入口已退役，历史实现留在 Git 历史中。
 - 迁移契约以 [docs/迁移基线.md](docs/迁移基线.md) 为准，当前完成度见 [docs/Go迁移进度.md](docs/Go迁移进度.md)。
 
 ## 2. 当前实现边界
 
-已实现：
-
-- Go 配置加载、Consul 连通性检查与 skey 初始化。
-- 与 Python 兼容的 AES-256-CBC 和 itsdangerous HS512 Token。
-- Consul KV / 服务注册 / 健康检查封装。
-- 动态 interval 调度器、任务加载、任务解析。
-- 登录、用户信息、任务列表、云账户、云资源列表、JumpServer 列表/配置等读接口。
-- `cmd/consulmock` 内存 Consul 与 `scripts/smoke.sh` 兼容性冒烟测试。
-
-尚未实现：
-
-- 阿里云、腾讯云、华为云、AWS 的 Go 同步适配器。
-- 同步结果写回 Consul。
-- JumpServer Go 客户端。
-- 新建/运行任务、云账户提交、自定义实例保存、JumpServer 首次同步等写接口。
-
-未实现部分会返回业务码 `50000` 或暂不提供；在适配器接入前，不要用 Go 进程接管生产同步任务。
+- Go 配置加载、Consul 连通性检查、skey 初始化、AES 与 HS512 Token 兼容。
+- 云账户及任务管理、资源查询、阿里云/腾讯云/华为云/AWS 同步与 Consul 写回。
+- PVE 分组与主机同步、JumpServer V2/V3 资产同步。
+- `cmd/consulmock` 提供内存 Consul，`make smoke` 验证前端依赖的 API 契约。
 
 ## 3. 仓库结构
 
@@ -37,10 +24,9 @@ cmd/consulmock/     内存 Consul 测试服务
 internal/           配置、鉴权、加密、Consul、调度、HTTP API
 scripts/            冒烟测试、演示数据灌入、Compose 环境适配与 .env 生成
 vue-consul/         Vue 2 前端
-flask-consul/       Python 迁移参考实现
 deploy/consul/      Compose 用的 Consul 配置模板与 ACL 引导脚本
 docs/               迁移基线与使用文档
-install/            旧 Flask 部署脚本，仅历史参考，不适用于 Go
+install/            独立 Consul 安装脚本
 docker-compose.yml  Consul + Go 后端 + Vue 前端 一键编排
 .env.example        Compose 环境变量模板（复制为 .env 后使用）
 ```
@@ -85,7 +71,7 @@ make down       # 停止并移除容器（保留数据卷）
 
 Go 代码要求：
 
-- 使用标准库优先，保持无第三方 Go 依赖（当前 `go.mod` 无 `require`）。
+- 使用标准库优先，新增依赖前先检查现有 Go 模块。
 - 修改 API 响应、字段名、状态码、时间格式前，先查 `docs/迁移基线.md` 并同步更新冒烟测试。
 - AES 格式为 `Base64(IV + AES-256-CBC(PKCS#7(plaintext)))`；Token 为 HS512 JWS，有效期 8 小时。
 - Consul 任务 KV 的 `func`、`args`、`id` 必须兼容 Python 版本，禁止随意改名。
@@ -257,13 +243,6 @@ SMOKE_PASSWORD="$PW" go run ./cmd/smoke http://10.0.10.236:2026
 
 - 禁止提交 `ConsulManager/assets/secret/skey`、`bak-skey*`、真实云厂商 AK/SK、JumpServer Token、`.env` 或部署密码。
 - 部署密码保存在目标机 `/opt/tensuns-go-verify/`，不要复制到仓库或提交历史。
-- 不要在 Go 适配器完成前把调度器用于生产；当前 `jobs.Runtime` 的 Cloud/JMS 依赖为空。
-- `install/` 下的脚本仍指向旧 Flask 镜像，Go 阶段使用根目录 `Dockerfile` / `make image`，前端使用 `vue-consul/Dockerfile` / `make web-image`。
+- 启用调度前，核对现有任务的账户权限，确保同一份 Consul 数据只有一个调度实例。
+- 后端镜像使用根目录 `Dockerfile` / `make image`，前端使用 `vue-consul/Dockerfile` / `make web-image`。
 - 保留 `LICENSE` 与上游来源说明；可以继续清理上游品牌链接，但不要删除许可证。
-
-## 7. 后续优先级
-
-1. 实现四家云厂商的 Go 适配器，并补真实 Consul 写入。
-2. 实现 JumpServer V2/V3 客户端与同步流程。
-3. 补齐任务新建/立即运行、云账户提交、自定义实例写接口。
-4. 为写接口和同步流程补充集成测试，再考虑启用生产调度。

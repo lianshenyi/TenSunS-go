@@ -24,8 +24,7 @@ type Syncer interface {
 	Run(ctx context.Context, vendor, account string) error
 }
 
-// Service aligns with flask-consul/units/jms/sync_jms.py: it builds one
-// JumpServer node per Consul resource group under the configured node,
+// Service builds one JumpServer node per Consul resource group under the configured node,
 // deletes assets that disappeared from the cloud, creates or updates the
 // rest, cleans up duplicate IPs and empty group nodes, and records the
 // JMS-side asset count.

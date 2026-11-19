@@ -48,7 +48,7 @@ func (c *Cipher) Encrypt(plaintext string) (string, error) {
 	return base64.StdEncoding.EncodeToString(out), nil
 }
 
-// Decrypt accepts the same format produced by flask-consul/units/myaes.py.
+// Decrypt accepts the legacy Base64 format containing the IV and ciphertext.
 func (c *Cipher) Decrypt(encoded string) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
 	if err != nil {
